@@ -236,13 +236,15 @@ export function createWatchZoneRenderer({
       entries.push({
         id,
         position: Cesium.Cartesian3.fromDegrees(lon, lat),
-        variant: 'label',
+        // A card, not a label: the label variant paints its title only, so
+        // the count line would leave an empty box.
+        variant: 'card',
         title,
         details,
         accent,
         priority: LABEL_PRIORITY_TOP - index,
-        collisionGroup: 'ambient-label',
-        paintLane: 'ambient-label',
+        collisionGroup: 'ambient-card',
+        paintLane: 'ambient-card',
         interactive: false,
       });
     }

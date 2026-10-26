@@ -117,8 +117,8 @@ and a place brief that can be copied as text. Watched assets are aircraft,
 vessels and satellites followed by identifier. The inbox shows the newest 50
 events of the session, with an Alerts filter. Active emergencies lists every
 emergency the two aircraft layers confirm, wherever it is. Zone outlines are
-one ground polyline coloured by state, with display-only overlay labels (at
-most 24). Alert events can raise a pop-up, at most one every 15 s, while
+one ground polyline coloured by state, with display-only overlay cards (at
+most 24) in the shared ambient-card lane: the zone name over its count line. Alert events can raise a pop-up, at most one every 15 s, while
 Settings ▸ Alert pop-ups is on. The panel stays hidden until it is opened or
 the saved document holds a zone or a watched asset, and never expands itself on
 restore. While Watch is unused nothing is read from any layer. In use, it reads

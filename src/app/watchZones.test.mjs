@@ -172,11 +172,12 @@ test('labels: display-only overlay entries, republished only when text changes',
   assert.equal(entries.length, 1);
   const [entry] = entries;
   assert.equal(entry.id, `watch-zone:${view.id}`);
-  assert.equal(entry.variant, 'label');
+  // The label variant paints only its title; a card shows the count line.
+  assert.equal(entry.variant, 'card');
   assert.equal(entry.title, 'Zone 1');
   assert.equal(entry.interactive, false);
-  assert.equal(entry.collisionGroup, 'ambient-label');
-  assert.equal(entry.paintLane, 'ambient-label');
+  assert.equal(entry.collisionGroup, 'ambient-card');
+  assert.equal(entry.paintLane, 'ambient-card');
   assert.equal(entry.priority, 20_000);
   assert.equal(entry.accent, WATCH_ZONE_STATE_COLORS.partial);
   assert.deepEqual(entry.details, ['3 aircraft · ≥ 3 vessels']);
