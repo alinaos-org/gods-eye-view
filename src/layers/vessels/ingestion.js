@@ -5,6 +5,16 @@ import { viewAreaMovedEnough } from './viewArea.js';
 // and the layer panel shows it translated.
 const msg = (text) => text;
 
+/** Whether a snapshot holds as many rows as were asked for, or more. */
+function filledRowCap(snapshot, rowLimit) {
+  const rows = Number.isFinite(snapshot?.rawRowCount)
+    ? snapshot.rawRowCount
+    : Array.isArray(snapshot?.records)
+      ? snapshot.records.length
+      : 0;
+  return Number.isFinite(rowLimit) && rowLimit > 0 && rows >= rowLimit;
+}
+
 /** Own source requests and classified feed state through explicit operations. */
 export function createIngestion({
   feed,
@@ -43,8 +53,9 @@ export function createIngestion({
       // Ask for the vessels in view; a wide view asks for every vessel.
       const area = readArea(viewer);
       feed.lastArea = area;
+      const rowLimit = getRowLimit();
       const snapshot = await readSource().getSnapshot(
-        { maxRows: getRowLimit(), ...(area ? { area } : {}) },
+        { maxRows: rowLimit, ...(area ? { area } : {}) },
         { signal },
       );
       if (!ownsAisRequest(requestController, requestSessionId)) return;
@@ -74,6 +85,10 @@ export function createIngestion({
       if (applied?.reconciled) {
         feed.appliedArea = area ? { ...area } : null;
         feed.appliedAreaKnown = true;
+        // A reply that filled the row cap may have been cut short: the
+        // server may ignore the area and keeps only the newest rows, without
+        // saying what it left out, so it vouches for no area.
+        feed.appliedTruncated = filledRowCap(snapshot, rowLimit);
       }
     } catch (error) {
       if (
@@ -241,6 +256,8 @@ export function createVesselFeed() {
     appliedArea: null,
     /** Whether a snapshot was reconciled since the layer was last enabled. */
     appliedAreaKnown: false,
+    /** Whether that snapshot filled the row cap, so it may be cut short. */
+    appliedTruncated: false,
     /** Stops listening for camera moves. */
     removeViewListener: null,
   };

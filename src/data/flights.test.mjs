@@ -86,9 +86,15 @@ test('flights analyst record: full record maps every contract field', () => {
     emergencyBroadcast: null,
     lastContactAtMs: null,
     receivedAtMs: null,
+    typeCode: null,
     routeOrigin: 'AUS',
     routeDestination: 'LAX',
   });
+  // The adsbdb type code is carried once enrichment found one.
+  assert.equal(
+    mapAnalystRecord('a1b2c3', { ...FULL_INFO, typeCode: ' GLF6 ' }).typeCode,
+    'GLF6',
+  );
 });
 
 test('flights analyst record: receivedAtMs is the poll receipt time, or null', () => {

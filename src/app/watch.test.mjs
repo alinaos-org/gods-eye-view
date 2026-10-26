@@ -84,6 +84,8 @@ function aircraft(icao24, point, t, overrides = {}) {
     onGround: false,
     military: false,
     aircraftClass: 'airliner',
+    // Enriched: the privacy guard can judge it (watchClassKnown).
+    typeCode: 'A320',
     squawk: '1200',
     emergency: false,
     emergencyKind: null,
@@ -540,7 +542,7 @@ test('a turned-off layer gives an off answer without a read', async (t) => {
   ]);
 });
 
-test('an unreadable saved document blocks every write until the person chooses', (t) => {
+test('an unreadable saved document blocks every write until the person resets', (t) => {
   const storage = fakeStorage('{not json');
   const h = setup(t, { storage, layers: AIR_LAYERS() });
   assert.deepEqual(h.model().readError, { code: 'malformed' });
@@ -549,10 +551,43 @@ test('an unreadable saved document blocks every write until the person chooses',
   assert.equal(storage.items.get(WATCH_STORAGE_KEY), '{not json');
   assert.equal(h.model().writeError, 'read-error');
   assert.equal(h.model().doc.watchlist.length, 1);
+  // Nothing was loaded, so Keep cannot save over the stored text.
   h.act({ type: 'storage-keep' });
+  assert.deepEqual(h.model().readError, { code: 'malformed' });
+  assert.equal(storage.items.get(WATCH_STORAGE_KEY), '{not json');
+  h.act({ type: 'storage-reset' });
   assert.equal(h.model().readError, null);
   assert.equal(h.model().writeError, null);
-  assert.equal(storage.read().watchlist[0].value, 'abc123');
+  assert.deepEqual(storage.read().watchlist, []);
+});
+
+test('Keep never overwrites saved data from a newer version or too large', (t) => {
+  const newer = JSON.stringify({ v: 2, zones: [{ id: 'z-new' }] });
+  for (const text of [newer, `"${'x'.repeat(300_000)}"`]) {
+    const storage = fakeStorage(text);
+    const h = setup(t, { storage, layers: AIR_LAYERS() });
+    assert.notEqual(h.model().readError?.code ?? 'partial', 'partial');
+    h.act({ type: 'storage-keep' });
+    assert.ok(h.model().readError);
+    assert.equal(storage.items.get(WATCH_STORAGE_KEY), text);
+    assert.deepEqual(storage.writes, []);
+    h.watch.destroy();
+  }
+});
+
+test('Keep after a partial read saves the entries that were loaded', (t) => {
+  const doc = makeDoc({ zones: [zone()] });
+  const text = JSON.stringify({
+    ...JSON.parse(serializeWatchDocument(doc)),
+    watchlist: [{ id: 'bad' }],
+  });
+  const storage = fakeStorage(text);
+  const h = setup(t, { storage, layers: AIR_LAYERS() });
+  assert.equal(h.model().readError.code, 'partial');
+  h.act({ type: 'storage-keep' });
+  assert.equal(h.model().readError, null);
+  assert.equal(storage.read().zones.length, 1);
+  assert.deepEqual(storage.read().watchlist, []);
 });
 
 test('a partial read reports what was dropped; reset clears the saved data', (t) => {
@@ -960,6 +995,108 @@ test('the privacy guard declines a civil business jet and drops its fix', (t) =>
   );
 });
 
+test('a watched civil aircraft is followed only once its type is known', (t) => {
+  const asked = [];
+  const tracked = [];
+  const doc = makeDoc({
+    watch: [
+      { match: 'icao24', value: 'a1b2c3' },
+      { match: 'callsign', value: 'N628TS' },
+    ],
+  });
+  const module = {
+    hasContact: () => true,
+    trackById: (id) => {
+      tracked.push(id);
+      return true;
+    },
+    findByQuery: (q) =>
+      q === 'N628TS' ? { icao24: 'c3c3c3', callsign: 'N628TS' } : null,
+    requestTypeEnrichment: (hex) => {
+      asked.push(hex);
+      return true;
+    },
+  };
+  const h = setup(t, {
+    doc,
+    layers: { flights: { rows: [], module }, military: { rows: [] } },
+  });
+  h.flushIdle();
+  h.advance(SEC);
+  const rows = () => [
+    aircraft('a1b2c3', at(5), h.clock.now, { typeCode: null }),
+    aircraft('c3c3c3', at(6), h.clock.now, {
+      callsign: 'N628TS',
+      typeCode: null,
+    }),
+  ];
+  h.refresh('flights', rows());
+  h.refresh('military', []);
+  const presence = () =>
+    h.model().view.watchlist.map((row) => row.presence.reason);
+  assert.deepEqual(presence(), ['class-unknown', 'class-unknown']);
+  // Each unjudged aircraft's type is asked for once.
+  assert.deepEqual(asked, ['a1b2c3', 'c3c3c3']);
+  h.advance(WATCH_TICK_MS);
+  h.refresh('flights', rows());
+  assert.deepEqual(asked, ['a1b2c3', 'c3c3c3']);
+  // Nothing is saved and Focus does not follow it.
+  assert.deepEqual(
+    h.storage.read().watchlist.map((entry) => entry.lastSeen),
+    [null, null],
+  );
+  const [first] = h.storage.read().watchlist;
+  h.act({ type: 'watch-focus', entryId: first.id });
+  assert.equal(h.model().notices.watch, 'class-unknown');
+  assert.deepEqual(tracked, []);
+  // The type arrives: an airliner is followed from then on.
+  h.advance(SEC);
+  h.refresh('flights', [
+    aircraft('a1b2c3', at(5), h.clock.now, { typeCode: 'A320' }),
+  ]);
+  assert.equal(h.model().view.watchlist[0].presence.state, 'live');
+});
+
+test('Focus on a declined entry never locates or follows the asset', (t) => {
+  const tracked = [];
+  const doc = makeDoc({
+    watch: [
+      { match: 'icao24', value: 'b1b1b1' },
+      { match: 'callsign', value: 'N628TS' },
+    ],
+  });
+  const module = {
+    hasContact: () => true,
+    trackById: (id) => {
+      tracked.push(id);
+      return true;
+    },
+  };
+  const h = setup(t, {
+    doc,
+    layers: { flights: { rows: [], module }, military: { rows: [] } },
+  });
+  h.flushIdle();
+  h.advance(SEC);
+  h.refresh('flights', [
+    aircraft('b1b1b1', at(5), h.clock.now, { aircraftClass: 'bizjet' }),
+    aircraft('c2c2c2', at(6), h.clock.now, {
+      callsign: 'N628TS',
+      aircraftClass: 'bizjet',
+    }),
+  ]);
+  h.refresh('military', []);
+  for (const entry of h.storage.read().watchlist) {
+    assert.equal(entry.declined, 'private-aircraft-class');
+    h.act({ type: 'watch-focus', entryId: entry.id });
+    assert.equal(h.model().notices.watch, 'declined');
+  }
+  assert.deepEqual(tracked, []);
+  assert.deepEqual(h.navigationCalls, []);
+  assert.deepEqual(h.focusRequests, []);
+  assert.deepEqual(h.flights, []);
+});
+
 test('last-seen fixes are saved at most once a minute', (t) => {
   const doc = makeDoc({ watch: [{ match: 'icao24', value: 'abc123' }] });
   const h = setup(t, { doc, layers: AIR_LAYERS() });
@@ -1021,6 +1158,91 @@ test('watched satellites resolve only from an exact NORAD match', (t) => {
   h.advance(WATCH_TICK_MS);
   assert.equal(queries.length, 4);
   assert.deepEqual(presence(), ['feed-off', 'feed-off']);
+});
+
+test('a watched satellite follows the satellites layer turning on and off at once', (t) => {
+  const doc = makeDoc({ watch: [{ match: 'norad', value: '25544' }] });
+  const h = setup(t, {
+    doc,
+    layers: {
+      ...AIR_LAYERS(),
+      satellites: {
+        enabled: false,
+        rows: [{}],
+        module: {
+          findByQuery: () => ({
+            noradId: 25544,
+            name: 'ISS',
+            latitude: 10,
+            longitude: 20,
+          }),
+        },
+      },
+    },
+  });
+  const state = () => h.model().view.watchlist[0].presence.state;
+  assert.equal(state(), 'feed-off');
+  h.act({ type: 'layer-enable', layerId: 'satellites' });
+  h.flushIdle();
+  assert.equal(state(), 'feed-off');
+  h.manager.state('satellites').enabled = true;
+  h.manager.emit({ type: 'visibility', layerId: 'satellites', enabled: true });
+  // A burst of changes queues one lookup.
+  h.manager.emit({ type: 'refresh', layerId: 'satellites', enabled: true });
+  assert.equal(h.flushIdle(), 1);
+  assert.equal(state(), 'computed');
+  h.manager.state('satellites').enabled = false;
+  h.manager.emit({ type: 'visibility', layerId: 'satellites', enabled: false });
+  h.flushIdle();
+  assert.equal(state(), 'feed-off');
+});
+
+test('a partial, stale or loading satellite catalog never proves absence', (t) => {
+  const doc = makeDoc({ watch: [{ match: 'norad', value: '25544' }] });
+  const cases = [
+    [{ status: 'degraded', error: '1 CelesTrak group unavailable' }, {}],
+    [{ status: 'stale', stale: true }, {}],
+    [{ status: 'nominal' }, { catalog: 'dense', chip: 'loading' }],
+  ];
+  for (const [stats, { catalog = 'core', chip = 'idle' }] of cases) {
+    const h = setup(t, {
+      doc,
+      layers: {
+        ...AIR_LAYERS(),
+        satellites: {
+          rows: [{}, {}, {}],
+          stats,
+          module: {
+            findByQuery: () => null,
+            getParams: () => ({ catalog }),
+            getRowControls: () => ({ chips: [{ id: 'catalog', state: chip }] }),
+          },
+        },
+      },
+    });
+    assert.deepEqual(
+      h.model().view.watchlist[0].presence,
+      { state: 'checking', reason: 'catalog-partial' },
+      JSON.stringify(stats),
+    );
+    h.watch.destroy();
+  }
+  // A failed first load with nothing loaded reads unavailable, not loading.
+  const h = setup(t, {
+    doc,
+    layers: {
+      ...AIR_LAYERS(),
+      satellites: {
+        rows: [],
+        stats: { status: 'unavailable', error: 'CelesTrak unreachable' },
+        module: { findByQuery: () => null },
+      },
+    },
+  });
+  assert.deepEqual(h.model().view.watchlist[0].presence, {
+    state: 'feed-unavailable',
+    reason: 'feed-unavailable',
+  });
 });
 
 test('briefs: built on request, copied as shown, dropped with their zone', async (t) => {

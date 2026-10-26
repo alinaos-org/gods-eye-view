@@ -148,6 +148,8 @@ function aircraft(icao24, point, t, overrides = {}) {
     onGround: false,
     military: false,
     aircraftClass: 'airliner',
+    // Enriched: the privacy guard can judge it (watchClassKnown).
+    typeCode: 'A320',
     squawk: '1200',
     emergency: false,
     emergencyKind: null,
@@ -602,6 +604,37 @@ test('a flights and military copy of one aircraft gives one enter', () => {
   assert.deepEqual(types([...second, ...third]), ['zone-enter']);
 });
 
+test('a layer back after a long gap cannot show an arrival as an enter', () => {
+  const zone = circleZone({ kinds: ['aircraft'] });
+  const h = createHarness(makeDoc({ zones: [zone] }));
+  let t = T0;
+  for (let i = 0; i < 2; i += 1) {
+    h.push('flights', { nowMs: t, rows: [aircraft('a00051', OUTSIDE, t)] });
+    h.push('military', { nowMs: t + 1, rows: [] });
+    t += 30 * SEC;
+  }
+  // Flights off for an hour while military keeps the zone answering.
+  h.push('flights', { nowMs: t, rows: [], mode: 'off' });
+  for (let i = 0; i < 120; i += 1) {
+    t += 30 * SEC;
+    h.push('military', { nowMs: t, rows: [] });
+    h.tick(t);
+  }
+  assert.equal(zoneView(h.engine, zone.id, t).perKind.aircraft.answer, 'floor');
+  // Flights back: the aircraft is inside, but its entry was never observed.
+  const out = [];
+  for (let i = 0; i < 2; i += 1) {
+    t += 30 * SEC;
+    out.push(
+      ...h.push('flights', { nowMs: t, rows: [aircraft('a00051', INSIDE, t)] }),
+    );
+  }
+  assert.deepEqual(types(out), []);
+  const occupant = zoneView(h.engine, zone.id, t).occupants[0];
+  assert.equal(occupant.assetKey, 'a00051');
+  assert.equal(occupant.lowerBound, true);
+});
+
 test('an asset first reported in the band inside the edge is first-seen', () => {
   for (const [km, expected] of [
     [24.8, []],
@@ -720,6 +753,55 @@ test('six simultaneous enters give one summary; the watched one stays separate',
   assert.equal(watched.severity, 'alert');
   assert.equal(watched.watchlisted, true);
   assert.equal(watched.params.sinceMs, firstInside);
+});
+
+test('two enter batches give two summaries that never merge in the inbox', () => {
+  const zone = circleZone({ kinds: ['aircraft'] });
+  const h = createHarness(makeDoc({ zones: [zone] }));
+  const batch = (prefix, count) =>
+    Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+  const first = batch('a0031', 8);
+  const second = batch('a0032', 6);
+  let t = T0;
+  const push = (outside, inside) =>
+    h.push('flights', {
+      nowMs: t,
+      rows: [
+        ...outside.map((id, i) =>
+          aircraft(id, offset(OUTSIDE.lat, OUTSIDE.lon, i * 0.5, 90), t),
+        ),
+        ...inside.map((id, i) =>
+          aircraft(id, offset(INSIDE.lat, INSIDE.lon, i * 0.5, 90), t),
+        ),
+      ],
+    });
+  const summaries = [];
+  push([...first, ...second], []);
+  for (const [outside, inside] of [
+    [second, first],
+    [second, first],
+    [[], [...first, ...second]],
+    [[], [...first, ...second]],
+  ]) {
+    t += 30 * SEC;
+    summaries.push(
+      ...push(outside, inside).filter((e) => e.type === 'zone-enter-summary'),
+    );
+  }
+  assert.deepEqual(
+    summaries.map((e) => e.params.count),
+    [8, 6],
+  );
+  assert.notEqual(summaries[0].dedupeKey, summaries[1].dedupeKey);
+  const log = eventLogModule.createWatchEventLog();
+  log.add(summaries, { nowMs: t });
+  assert.deepEqual(
+    log.list().map((row) => [row.params.count, row.repeat]),
+    [
+      [6, 1],
+      [8, 1],
+    ],
+  );
 });
 
 test('five simultaneous enters stay individual events', () => {
@@ -899,6 +981,62 @@ test('a vessel needs 1 counted epoch plus 60 min to be no longer reported', () =
   assert.equal(events[0].params.descending, null);
 });
 
+test('no-longer-reported waits while the feed is held', () => {
+  const zone = circleZone({ kinds: ['aircraft'] });
+  const h = createHarness(makeDoc({ zones: [zone] }));
+  let t = T0;
+  const both = (rows, mode = 'counted') => [
+    ...h.push('flights', { nowMs: t, rows, mode }),
+    ...h.push('military', { nowMs: t + 1, rows: [], mode }),
+  ];
+  both([aircraft('a00611', INSIDE, t)]);
+  // Counted epochs without it until T0 + 8 min (unknown since T0 + 30 s,
+  // so due at T0 + 10.5 min), then a held feed across the due time.
+  while (t < T0 + 8 * MIN) {
+    t += 30 * SEC;
+    both([]);
+  }
+  const held = [];
+  while (t < T0 + 12 * MIN) {
+    t += 30 * SEC;
+    held.push(...both([], 'stale'), ...h.tick(t));
+  }
+  assert.equal(zoneView(h.engine, zone.id, t).perKind.aircraft.answer, 'held');
+  assert.ok(!types(held).includes('zone-no-longer-reported'));
+  // A counted answer again: the deferred event can now be reported.
+  t += 30 * SEC;
+  both([]);
+  assert.deepEqual(types(h.tick(t)), ['zone-no-longer-reported']);
+});
+
+test('no-longer-reported never fires while the zone is outside the loaded area', () => {
+  const zone = circleZone({ kinds: ['vessel'] });
+  const h = createHarness(makeDoc({ zones: [zone] }));
+  let t = T0;
+  h.push('ais-live-vessels', {
+    nowMs: t,
+    rows: [vessel('235000611', INSIDE, t)],
+  });
+  t += MIN;
+  h.push('ais-live-vessels', { nowMs: t, rows: [] });
+  // Pan away: the loaded area no longer covers the zone.
+  const away = { kind: 'circle', lat: 40, lon: 10, radiusKm: 200 };
+  const events = [];
+  for (t += MIN; t <= T0 + 150 * MIN; t += MIN) {
+    events.push(
+      ...h.push('ais-live-vessels', { nowMs: t, rows: [], coverage: away }),
+      ...h.tick(t),
+    );
+  }
+  assert.equal(
+    zoneView(h.engine, zone.id, t).perKind.vessel.reason,
+    'outside-loaded-area',
+  );
+  assert.ok(!types(events).includes('zone-no-longer-reported'));
+  // Past twice the expiry time the member expires silently.
+  assert.deepEqual(zoneView(h.engine, zone.id, t).occupants, []);
+});
+
 test('a fallback disc partly over the zone gives floor, never no-longer-reported', () => {
   const zone = circleZone();
   const compiled = compileZone(zone);
@@ -1004,11 +1142,43 @@ test('vessel disc panned away is unknown; back within 30 min resumes; later rech
     rows: [vessel('235000801', INSIDE, t)],
   });
   assert.deepEqual(types(events), ['zone-rechecked']);
-  assert.deepEqual(events[0].params, { gapMs: 35 * MIN, before: 2, after: 1 });
+  assert.deepEqual(events[0].params, {
+    gapMs: 35 * MIN,
+    before: 2,
+    after: 1,
+    beforeFloor: false,
+    afterFloor: false,
+  });
+  assert.deepEqual(events[0].caveats, []);
   assert.equal(events[0].kind, 'vessel');
   view = zoneView(h.engine, zone.id, t);
   assert.equal(view.occupants.length, 1);
   assert.equal(view.occupants[0].lowerBound, true);
+});
+
+test('a recheck against a floor answer marks that count a lower bound', () => {
+  const zone = circleZone({ kinds: ['aircraft'] });
+  const h = createHarness(makeDoc({ zones: [zone] }));
+  let t = T0;
+  h.push('military', { nowMs: t, rows: [] });
+  h.push('flights', { nowMs: t, rows: [aircraft('a00911', INSIDE, t)] });
+  t += 12 * MIN;
+  // Military is held now, so the zone answer is a floor.
+  h.push('military', { nowMs: t, mode: 'stale' });
+  const events = h.push('flights', {
+    nowMs: t,
+    rows: [aircraft('a00911', INSIDE, t), aircraft('a00912', at(3), t)],
+  });
+  assert.equal(zoneView(h.engine, zone.id, t).perKind.aircraft.answer, 'floor');
+  assert.deepEqual(types(events), ['zone-rechecked']);
+  assert.deepEqual(events[0].params, {
+    gapMs: 12 * MIN,
+    before: 1,
+    after: 2,
+    beforeFloor: false,
+    afterFloor: true,
+  });
+  assert.deepEqual(events[0].caveats, ['lower-bound']);
 });
 
 test('a long aircraft gap re-baselines silently when the count is unchanged', () => {
@@ -1118,7 +1288,10 @@ test('busy mode starts above a median of 30 and ends below 20', () => {
   assert.equal(events[0].params.noLongerReported, 0);
   assert.equal(events[0].params.median, 15);
   assert.equal(events[0].kind, 'aircraft');
-  assert.equal(events[0].dedupeKey, `zone-traffic-summary|${zone.id}|aircraft`);
+  assert.equal(
+    events[0].dedupeKey,
+    `zone-traffic-summary|${zone.id}|aircraft:${events[0].params.sinceMs}`,
+  );
 });
 
 test('a busy zone reports its counters every 10 minutes; watched assets pass', () => {
@@ -1435,6 +1608,45 @@ test('an emergency reported in a zone stays in scope after it leaves', () => {
   assert.equal(end.params.durationMs, 90 * SEC);
 });
 
+test('a reported emergency forgotten silently leaves no follow-up in scope', () => {
+  const h = createHarness(
+    makeDoc({ watch: [{ match: 'icao24', value: 'd00006' }] }),
+  );
+  const far = at(500);
+  let t = T0;
+  const poll = (rows, mode = 'counted') =>
+    h.push('flights', { nowMs: t, rows, mode });
+  h.push('military', { nowMs: t, rows: [] });
+  poll([emergencyAircraft('d00006', far, t)]);
+  t += 30 * SEC;
+  assert.deepEqual(types(poll([emergencyAircraft('d00006', far, t)])), [
+    'emergency-start',
+  ]);
+  // Held for over an hour: the track turns unknown and is forgotten.
+  for (let i = 0; i < 62; i += 1) {
+    t += MIN;
+    poll([], 'stale');
+  }
+  assert.equal(h.engine.diagnostics().emergency.forgotten, 1);
+  // Unwatched now; a new emergency outside every zone is out of scope,
+  // its end included.
+  h.engine.setDocument(makeDoc());
+  t += 60 * MIN;
+  const out = [];
+  for (const squawking of [true, true, false, false]) {
+    out.push(
+      ...poll([
+        squawking
+          ? emergencyAircraft('d00006', far, t)
+          : aircraft('d00006', far, t),
+      ]),
+    );
+    t += 30 * SEC;
+  }
+  assert.deepEqual(types(out), []);
+  assert.equal(h.engine.diagnostics().emergencyOutOfScope, 2);
+});
+
 // ---------------------------------------------------------- document edits
 
 test('a geometry edit re-baselines only that zone', () => {
@@ -1675,6 +1887,30 @@ test('watched aircraft: back after a stale stretch is seen with a caveat', () =>
   assert.deepEqual(events[0].caveats, ['coverage-incomplete']);
 });
 
+test('watched aircraft: a paused feed is no stale stretch of the asset', () => {
+  const h = createHarness(
+    makeDoc({ watch: [{ match: 'icao24', value: 'a0cab1' }] }),
+  );
+  const point = at(5);
+  let t = T0;
+  const both = () => [
+    ...h.push('flights', { nowMs: t, rows: [aircraft('a0cab1', point, t)] }),
+    ...h.push('military', { nowMs: t + 1, rows: [] }),
+  ];
+  for (let i = 0; i < 3; i += 1) {
+    both();
+    t += 30 * SEC;
+  }
+  // Polling pauses for 5 minutes (a hidden tab); only ticks run.
+  const paused = [];
+  for (const end = t + 5 * MIN; t < end; t += 30 * SEC) {
+    paused.push(...h.tick(t));
+  }
+  assert.equal(h.engine.view(t).watchlist[0].presence.state, 'stale-fix');
+  assert.deepEqual(paused, []);
+  assert.deepEqual(types(both()), []);
+});
+
 test('a watched vessel inside a zone lists the zone and escalates its exit', () => {
   const zone = circleZone({ kinds: ['vessel'] });
   const h = createHarness(
@@ -1767,6 +2003,57 @@ test('the privacy guard declines civil bizjets and pleasure craft', () => {
     calls,
     declined.map((d) => [d.entryId, d.code]),
   );
+});
+
+test('a watched civil aircraft without a type code is not followed', () => {
+  const zone = circleZone({ kinds: ['aircraft'] });
+  const h = createHarness(
+    makeDoc({ zones: [zone], watch: [{ match: 'callsign', value: 'N628TS' }] }),
+  );
+  let t = T0;
+  // Not enriched yet: its class is only the OpenSky default.
+  const jet = (point) =>
+    aircraft('a1b2c3', point, t, { callsign: 'N628TS', typeCode: null });
+  const push = (point) => [
+    ...h.push('flights', { nowMs: t, rows: [jet(point)] }),
+    ...h.push('military', { nowMs: t + 1, rows: [] }),
+  ];
+  const events = [...push(OUTSIDE)];
+  for (let i = 0; i < 3; i += 1) {
+    t += 30 * SEC;
+    events.push(...push(INSIDE));
+  }
+  const row = h.engine.view(t).watchlist[0];
+  assert.deepEqual(row.presence, {
+    state: 'checking',
+    reason: 'class-unknown',
+  });
+  assert.equal(row.fix, null);
+  assert.deepEqual(row.zoneIds, []);
+  // The brief does not list it as a watched asset inside the zone.
+  const brief = h.engine.brief(zone.id, { nowMs: t });
+  assert.equal(
+    brief.sections.find((section) => section.id === 'watched')?.highlights
+      .length ?? 0,
+    0,
+  );
+  // It leaves the feed and comes back: still no watch events.
+  for (let i = 0; i < 4; i += 1) {
+    t += 30 * SEC;
+    events.push(...h.push('flights', { nowMs: t, rows: [] }), ...h.tick(t));
+  }
+  t += 30 * MIN;
+  for (let i = 0; i < 2; i += 1) {
+    t += 30 * SEC;
+    events.push(...push(INSIDE));
+  }
+  assert.deepEqual(h.engine.lastSeenUpdates(), []);
+  assert.deepEqual(h.engine.declinedUpdates(), []);
+  // Zone events treat it as any unwatched aircraft; no watch events at all.
+  assert.ok(!events.some((e) => e.type.startsWith('watch-')));
+  const enter = events.find((e) => e.type === 'zone-enter');
+  assert.equal(enter.watchlisted, false);
+  assert.equal(enter.severity, 'notice');
 });
 
 test('watched satellites resolve from lookups with an exact NORAD match', () => {

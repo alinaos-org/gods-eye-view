@@ -80,6 +80,7 @@ import {
   createWatchTracker,
   matchAsset,
   resolveWatchPresence,
+  watchClassKnown,
   watchEligibility,
 } from './watchlist.js';
 
@@ -179,7 +180,13 @@ export const WATCH_EVENT_CATALOGUE = Object.freeze({
     'noLongerReported',
     'median',
   ]),
-  'zone-rechecked': catalogueEntry('info', null, ['gapMs', 'before', 'after']),
+  'zone-rechecked': catalogueEntry('info', null, [
+    'gapMs',
+    'before',
+    'after',
+    'beforeFloor',
+    'afterFloor',
+  ]),
   'feed-paused': catalogueEntry('notice', null, ['reason', 'sinceMs']),
   'feed-resumed': catalogueEntry('info', null, ['pausedMs']),
   'fires-new': catalogueEntry('notice', 'alert-if-strong-fire', [
@@ -299,6 +306,12 @@ const BUSY_COUNTER = Object.freeze({
 });
 const ACTIVE_EMERGENCY_PHASES = Object.freeze(['active', 'clearing']);
 const VIEW_EMERGENCY_PHASES = Object.freeze(['active', 'clearing', 'unknown']);
+/**
+ * A no-longer-reported event that cannot be reported (the zone or a source
+ * layer does not answer counted) waits up to this many expiry times of its
+ * kind before the member expires silently.
+ */
+const LOSS_DEFER_FACTOR = 2;
 const AWAITING_PRESENCE = Object.freeze({
   state: WATCH_PRESENCE.CHECKING,
   reason: 'awaiting-frame',
@@ -659,7 +672,9 @@ export function createWatchEngine(options = {}) {
   /** layerId → latest frame. */
   let frames = new Map();
   let framesVersion = 0;
-  /** layerId → the previous answering frame. */
+  /** layerId → when its latest frame was ingested. */
+  let frameTimes = new Map();
+  /** layerId → the previous answering frame and when it was ingested. */
   let prevFrames = new Map();
   /** layerId → feed pause bookkeeping. */
   let feedStates = new Map();
@@ -801,6 +816,24 @@ export function createWatchEngine(options = {}) {
     return out;
   }
 
+  /**
+   * Frames that can show an asset was outside before: this layer's previous
+   * answering frame and the other layers' latest answering frames, each only
+   * when ingested within `maxAgeMs` (an hour-old frame of a layer that was
+   * off says nothing about how an asset arrived).
+   */
+  function priorFramesFor(kind, layerId, nowMs, maxAgeMs) {
+    const recent = (atMs) =>
+      typeof atMs === 'number' && nowMs - atMs <= maxAgeMs;
+    const out = [];
+    const prev = prevFrames.get(layerId);
+    if (prev && recent(prev.atMs)) out.push(prev.frame);
+    for (const other of otherAnsweringFrames(kind, layerId)) {
+      if (recent(frameTimes.get(other.layerId))) out.push(other);
+    }
+    return out;
+  }
+
   function isSameEpochNoop(prev, frame) {
     if (!prev) return false;
     const answer = answerOf(frame);
@@ -859,7 +892,11 @@ export function createWatchEngine(options = {}) {
     const military =
       asset.military === true ||
       (asset.kind === 'aircraft' && isMilitaryKey(asset.key));
-    return watchEligibility({ ...asset, military }, watchPolicy).ok;
+    // A civil aircraft the guard cannot judge yet is not treated as watched.
+    return (
+      watchEligibility({ ...asset, military }, watchPolicy).ok &&
+      watchClassKnown({ ...asset, military })
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -996,6 +1033,10 @@ export function createWatchEngine(options = {}) {
         zoneId: zs.id,
         kind: ks?.kind ?? null,
         layerId: context.layerId,
+        // One batch per frame: distinct batches never merge in the inbox.
+        dedupeTail: `${context.layerId ?? ks?.kind ?? ''}:${
+          timeOrNull(context.dataAtMs) ?? context.nowMs
+        }`,
         params: {
           count: members.length,
           labels,
@@ -1027,6 +1068,7 @@ export function createWatchEngine(options = {}) {
       baselined: false,
       lastAnsweringAtMs: null,
       lastCount: null,
+      lastFloor: false,
       series: PRESENCE_KINDS.includes(kind)
         ? createOccupancySeries(occupancyOptions)
         : null,
@@ -1224,6 +1266,7 @@ export function createWatchEngine(options = {}) {
       callsign: textOrNull(asset.callsign),
       military: asset.military === true,
       aircraftClass: textOrNull(asset.aircraftClass),
+      typeCode: textOrNull(asset.typeCode),
       shipType: textOrNull(asset.shipType),
       label: textOrNull(asset.label) ?? textOrNull(asset.callsign),
     };
@@ -1408,6 +1451,8 @@ export function createWatchEngine(options = {}) {
           atMs: nowMs,
           zoneId: zs.id,
           kind: ks.kind,
+          // One summary per window: distinct windows never merge.
+          dedupeTail: `${ks.kind}:${c.sinceMs}`,
           params: {
             sinceMs: c.sinceMs,
             entered: c.entered,
@@ -1427,7 +1472,7 @@ export function createWatchEngine(options = {}) {
   }
 
   function stepWithFix(zs, ks, kind, existing, asset, distanceM, ctx) {
-    const { frame, la, margin, prevFrame, others, nowMs, zoneEvents } = ctx;
+    const { frame, la, margin, priorFrames, nowMs, zoneEvents } = ctx;
     const layerId = frame.layerId;
     const meta = fixMetaOf(asset);
     const fresh =
@@ -1441,9 +1486,7 @@ export function createWatchEngine(options = {}) {
       (!existing || existing.rec.state === MEMBER_STATE.OUTSIDE) &&
       distanceM <= -Math.max(0, margin);
     const seenOutsideBefore =
-      latches &&
-      (wasOutside(zs, prevFrame, asset) ||
-        others.some((other) => wasOutside(zs, other, asset)));
+      latches && priorFrames.some((prior) => wasOutside(zs, prior, asset));
     const step = stepMember(
       existing ? existing.rec : initialMember(),
       {
@@ -1485,7 +1528,8 @@ export function createWatchEngine(options = {}) {
 
   /**
    * Whether `frame` (this layer's previous answering frame, or the other
-   * aircraft layer's latest) reported the asset outside the zone.
+   * aircraft layer's latest, each within the re-baseline gap) reported the
+   * asset outside the zone.
    */
   function wasOutside(zs, frame, asset) {
     if (!frame) return false;
@@ -1552,6 +1596,7 @@ export function createWatchEngine(options = {}) {
     if (!ks.baselined || (gapMs !== null && gapMs > rebaselineGapMs)) {
       const wasBaselined = ks.baselined;
       const before = ks.lastCount;
+      const beforeFloor = ks.lastFloor;
       baseline(zs, ks, kind, nowMs);
       if (
         wasBaselined &&
@@ -1569,13 +1614,24 @@ export function createWatchEngine(options = {}) {
             zoneId: zs.id,
             kind,
             layerId,
-            params: { gapMs, before, after: za.count },
-            caveats: answerCaveats(frame, la, za),
+            params: {
+              gapMs,
+              before,
+              after: za.count,
+              beforeFloor,
+              afterFloor: za.state === FLOOR,
+            },
+            // A floor on either side is a lower bound, never an exact count.
+            caveats: [
+              ...answerCaveats(frame, la, za),
+              ...(beforeFloor || za.state === FLOOR ? ['lower-bound'] : []),
+            ],
           }),
         );
       }
       ks.lastAnsweringAtMs = nowMs;
       ks.lastCount = za.count;
+      ks.lastFloor = za.state === FLOOR;
       emitZoneEvents(zs, ks, zoneEvents, out, { coalesce: false });
       return;
     }
@@ -1586,7 +1642,8 @@ export function createWatchEngine(options = {}) {
       frame,
       la,
       margin,
-      prevFrame: prevFrames.get(layerId) ?? null,
+      // Only frames within the re-baseline gap can show an asset outside.
+      priorFrames: priorFramesFor(kind, layerId, nowMs, rebaselineGapMs),
       others: otherAnsweringFrames(kind, layerId),
       nowMs,
       zoneEvents,
@@ -1638,6 +1695,7 @@ export function createWatchEngine(options = {}) {
     }
     ks.lastAnsweringAtMs = nowMs;
     ks.lastCount = za.count;
+    ks.lastFloor = za.state === FLOOR;
     emitZoneEvents(zs, ks, zoneEvents, out, {
       coalesce: true,
       nowMs,
@@ -1783,6 +1841,19 @@ export function createWatchEngine(options = {}) {
     return null;
   }
 
+  /**
+   * Drops reported keys whose track the tracker forgot or evicted without a
+   * transition, so a later episode of the same aircraft starts in scope
+   * afresh.
+   */
+  function pruneReportedEmergencies() {
+    if (!reportedEmergencies.size) return;
+    const live = new Set(emergency.active().map((track) => track.key));
+    for (const key of reportedEmergencies) {
+      if (!live.has(key)) reportedEmergencies.delete(key);
+    }
+  }
+
   function emergencyEvents(transitions, nowMs, out) {
     for (const t of transitions) {
       if (!isRecord(t) || !WATCH_EVENT_CATALOGUE[t.type]) continue;
@@ -1805,6 +1876,10 @@ export function createWatchEngine(options = {}) {
         (follow && reportedEmergencies.has(key));
       if (!inScope) {
         counters.emergencyOutOfScope += 1;
+        // An unreported start means its follow-ups are not reported either.
+        if (t.type === EMERGENCY_TRANSITION.START) {
+          reportedEmergencies.delete(key);
+        }
         continue;
       }
       if (t.type === EMERGENCY_TRANSITION.START) reportedEmergencies.add(key);
@@ -1973,10 +2048,13 @@ export function createWatchEngine(options = {}) {
     noteLastSeen(rt, presence);
     const signature = epochSignature(entry.kind);
     if (
-      presence.state === WATCH_PRESENCE.NOT_REPORTED &&
+      (presence.state === WATCH_PRESENCE.NOT_REPORTED ||
+        presence.state === WATCH_PRESENCE.STALE_FIX) &&
       rt.epochSig === signature
     ) {
-      // The same frames are no new absence evidence.
+      // The same frames are no new absence evidence, and a fix that only
+      // aged while no new epoch arrived (a paused feed) is feed state, not
+      // the asset going stale.
       return;
     }
     rt.epochSig = signature;
@@ -2204,6 +2282,7 @@ export function createWatchEngine(options = {}) {
       return [];
     }
     frames.set(layerId, frame);
+    frameTimes.set(layerId, nowMs);
     framesVersion += 1;
     const startMs = readClock();
 
@@ -2221,9 +2300,12 @@ export function createWatchEngine(options = {}) {
     }
     const emergencyOut = [];
     if (transitions.length) emergencyEvents(transitions, nowMs, emergencyOut);
+    if (kind === 'aircraft') pruneReportedEmergencies();
     const watchEvents = [];
     if (PRESENCE_KINDS.includes(kind)) watchStep(kind, nowMs, watchEvents);
-    if (isAnswering(answerOf(frame))) prevFrames.set(layerId, frame);
+    if (isAnswering(answerOf(frame))) {
+      prevFrames.set(layerId, { frame, atMs: nowMs });
+    }
     const events = finalize([
       ...feedEvents,
       ...emergencyOut,
@@ -2236,9 +2318,40 @@ export function createWatchEngine(options = {}) {
   }
 
   /**
+   * A no-longer-reported event needs the zone to answer counted for the
+   * kind now, and every layer that carried the member to answer counted for
+   * the zone: time while a feed is held or the zone is outside the loaded
+   * area is not observed silence.
+   */
+  function canReportLoss(zs, kind, rec) {
+    if (zoneAnswerFor(zs, kind).state !== COUNTED) return false;
+    const sources = Array.isArray(rec.sources) ? rec.sources : [];
+    return sources.every((source) => {
+      const frame = frames.get(source);
+      return (
+        Boolean(frame) && layerAnswer(frame, zs.compiled).state === COUNTED
+      );
+    });
+  }
+
+  /**
+   * Whether a deferred no-longer-reported has waited
+   * {@link LOSS_DEFER_FACTOR} expiry times, so the member expires silently.
+   */
+  function lossDeferralOver(rec, kind, nowMs) {
+    const sinceMs =
+      finiteOrNull(rec.unknownSinceMs) ?? finiteOrNull(rec.lastFix?.atMs);
+    const expireMs = perKindRule(presencePolicy, 'unknownExpireMs', kind);
+    return sinceMs === null || nowMs - sinceMs >= LOSS_DEFER_FACTOR * expireMs;
+  }
+
+  /**
    * Advances time: expires unknown members (`zone-no-longer-reported` only
-   * with counted absence evidence), flushes busy summaries and re-evaluates
-   * watched assets (a not-reported state needs a new epoch to count again).
+   * with counted absence evidence, while the zone and every layer that
+   * carried the member answer counted; otherwise the event waits for such an
+   * answer, and after {@link LOSS_DEFER_FACTOR} expiry times the member
+   * expires silently), flushes busy summaries and re-evaluates watched
+   * assets (a not-reported state needs a new epoch to count again).
    *
    * @param {number} nowMs
    * @returns {WatchEvent[]}
@@ -2263,8 +2376,15 @@ export function createWatchEngine(options = {}) {
             presencePolicy,
           );
           const before = wrapper.rec;
+          const lost =
+            step.transition === PRESENCE_TRANSITION.NO_LONGER_REPORTED;
+          const reportable = lost && canReportLoss(zs, kind, before);
+          if (lost && !reportable && !lossDeferralOver(before, kind, now)) {
+            // Deferred until the zone and its sources can answer again.
+            continue;
+          }
           wrapper.rec = step.next;
-          if (step.transition === PRESENCE_TRANSITION.NO_LONGER_REPORTED) {
+          if (reportable) {
             const detail = step.detail ?? {};
             zoneEvents.push(
               presenceEvent(
@@ -2326,9 +2446,10 @@ export function createWatchEngine(options = {}) {
 
   /**
    * Stores the controller's satellite lookups (one per NORAD id:
-   * `{norad, enabled, ready, result, atMs}`, as an array, a Map or an object
-   * keyed by NORAD id) and re-resolves watched satellites. Computed
-   * positions are never observations: no events and no last-seen writes.
+   * `{norad, enabled, ready, complete, unavailable, result, atMs}`, as an
+   * array, a Map or an object keyed by NORAD id) and re-resolves watched
+   * satellites. Computed positions are never observations: no events and no
+   * last-seen writes.
    *
    * @param {object[]|Map<string, object>|Object<string, object>} rows
    * @param {number} nowMs
@@ -2388,10 +2509,19 @@ export function createWatchEngine(options = {}) {
     return key ? (index.byKey.get(`${entry.kind}:${key}`) ?? []) : [];
   }
 
+  /**
+   * The zone members a watch entry follows: none while the guard cannot
+   * judge the aircraft yet (presence reason 'class-unknown').
+   */
+  function followedMembers(rt, index) {
+    if (rt.presence?.reason === 'class-unknown') return [];
+    return entryMembers(rt.entry, index);
+  }
+
   function watchRow(rt, index) {
     const entry = rt.entry;
     const presence = rt.presence ?? AWAITING_PRESENCE;
-    const members = entryMembers(entry, index);
+    const members = followedMembers(rt, index);
     const zoneIds = [];
     for (const item of members) {
       if (!zoneIds.includes(item.zoneId)) zoneIds.push(item.zoneId);
@@ -2575,7 +2705,7 @@ export function createWatchEngine(options = {}) {
     const index = memberIndex();
     const watchInside = [];
     for (const rt of watchRuntime.values()) {
-      const members = entryMembers(rt.entry, index).filter(
+      const members = followedMembers(rt, index).filter(
         (item) => item.zoneId === zs.id,
       );
       if (!members.length) continue;
@@ -2682,6 +2812,7 @@ export function createWatchEngine(options = {}) {
   function reset() {
     frames = new Map();
     framesVersion += 1;
+    frameTimes = new Map();
     prevFrames = new Map();
     feedStates = new Map();
     reportedEmergencies = new Set();

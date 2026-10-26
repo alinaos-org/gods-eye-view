@@ -120,6 +120,7 @@ export const ANSWER_REASONS = Object.freeze([
  *   callsign: string|null, lat: number, lon: number, altM: number|null,
  *   speedMps: number|null, headingDeg: number|null, vRateMps: number|null,
  *   onGround: boolean|null, military: boolean, aircraftClass: string|null,
+ *   typeCode: string|null,
  *   squawk: string|null, emergency: boolean, emergencyKind: string|null,
  *   emergencySource: string|null, fixAtMs: number|null,
  *   contactAtMs: number|null, layerId: string}} AircraftAsset
@@ -531,6 +532,7 @@ export function toAsset(layerId, row, { epochMs = null } = {}) {
       onGround: boolOrNull(row.onGround),
       military: row.military === true || layerId === 'military',
       aircraftClass: textOrNull(row.aircraftClass),
+      typeCode: textOrNull(row.typeCode),
       squawk: textOrNull(row.squawk),
       emergency: row.emergency === true,
       emergencyKind: textOrNull(row.emergencyKind),

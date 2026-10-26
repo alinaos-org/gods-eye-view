@@ -222,3 +222,18 @@ test('flights coverage is unknown without text, anchor, distance or a usable dis
     );
   }
 });
+
+test('a type lookup is asked for, ahead of the backlog, only for a known aircraft', () => {
+  const f = fixture();
+  const asked = [];
+  f.parts.enrichment = {
+    _requestTypeEnrichment: (icao24, priority) =>
+      asked.push([icao24, priority]),
+  };
+  assert.equal(f.queries.requestTypeEnrichment(' ABC123 '), true);
+  assert.deepEqual(asked, [['abc123', true]]);
+  for (const id of ['def456', 'abc12', '~abc123', null, undefined]) {
+    assert.equal(f.queries.requestTypeEnrichment(id), false, String(id));
+  }
+  assert.equal(asked.length, 1);
+});

@@ -488,3 +488,47 @@ test('vessel coverage is the reconciled area and is cleared after disable and de
   layer.destroy();
   assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
 });
+
+test('a vessel reply that fills the row cap vouches for no area', async (t) => {
+  const originalDocument = globalThis.document;
+  globalThis.document = { getElementById: () => null };
+  t.after(() => {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  });
+  let rows = 500;
+  const { layer } = setup(
+    {
+      async getSnapshot(query) {
+        assert.equal(query.maxRows, 500);
+        return snapshot([observation('111')], { rawRowCount: rows });
+      },
+    },
+    { maxRows: 500 },
+  );
+  const rad = Math.PI / 180;
+  layer.testing._setVesselStateForTest({
+    viewer: {
+      camera: {
+        positionCartographic: {
+          latitude: 51.93 * rad,
+          longitude: 4.05 * rad,
+          height: 40_000,
+        },
+        positionWC: { x: 0, y: 0, z: 0 },
+        heading: 0,
+        pitch: 0,
+        roll: 0,
+      },
+    },
+    billboardCollection: { add: (options) => ({ ...options }), remove: noop },
+  });
+  // The server keeps only the newest rows worldwide: a full reply may lack
+  // vessels that are still in view.
+  await layer.update();
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
+  rows = 499;
+  await layer.update();
+  assert.equal(layer.getCoverageArea().kind, 'circle');
+  layer.destroy();
+});

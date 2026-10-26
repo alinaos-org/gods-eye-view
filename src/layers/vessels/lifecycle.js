@@ -255,6 +255,7 @@ export function createLifecycle({
   function clearAppliedArea() {
     state.feed.appliedArea = null;
     state.feed.appliedAreaKnown = false;
+    state.feed.appliedTruncated = false;
   }
 
   function removeViewListener() {

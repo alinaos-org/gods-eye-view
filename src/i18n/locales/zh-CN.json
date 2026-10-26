@@ -2849,7 +2849,6 @@
   "inside {zones}": "位于 {zones} 内",
   "Watched assets": "监视对象",
   "No watched assets. Select an aircraft, vessel or satellite and choose Watch selected, or add one by identifier.": "没有监视对象。选择一架飞机、一艘船舶或一颗卫星后选择“监视所选”，或按标识符添加。",
-  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, and watched assets are never shared.": "仅限标识符。不监视私人轻型飞机、滑翔机、公务机、游艇和帆船，监视对象也从不分享。",
   "Watch selected": "监视所选",
   "{name} is already watched": "{name} 已在监视中",
   "Select an aircraft, vessel or satellite": "请选择飞机、船舶或卫星",
@@ -3169,5 +3168,12 @@
   "longest present": "停留最久",
   "WATCH": "监视",
   "Unread watch events": "未读监视事件",
-  "Watch zones and watched assets": "监视区域与监视对象"
+  "Watch zones and watched assets": "监视区域与监视对象",
+  "Identifier type": "标识符类型",
+  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, civil aircraft and vessels are followed only once their type is known, and watched assets are never shared.": "仅限标识符。不监视私人轻型飞机、滑翔机、公务机、游艇和帆船，民用飞机和船舶须在其类型已知后才会跟踪，监视对象也从不分享。",
+  "Clear brief": "清除简报",
+  "Confirm save": "确认保存",
+  "the satellite catalog is incomplete": "卫星目录不完整",
+  "its type is not known yet, so it is not followed": "其类型尚不明确，因此不予跟踪",
+  "The type of that aircraft or vessel is not known yet, so Watch does not follow it.": "该飞机或船舶的类型尚不明确，因此监视不会跟踪它。"
 }

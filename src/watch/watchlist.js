@@ -26,9 +26,15 @@
  *    a coverage is unknown, or a layer answered only a floor).
  *
  * A declined entry, or a match the guard declines, resolves to `declined`
- * and never carries a position. Satellites resolve to `computed`,
- * `not-in-catalog`, `checking` (catalog not loaded) or `feed-off` from a
- * lookup the controller made, and the NORAD id is re-checked here.
+ * and never carries a position. A civil aircraft the guard cannot judge yet
+ * (no adsbdb type code, so its class is only a default), or a vessel with no
+ * AIS ship type (see {@link watchClassKnown}), resolves to `checking` with
+ * reason 'class-unknown': no position, so no last-seen fix and no watch
+ * events, until its type is known. Satellites resolve to `computed`,
+ * `not-in-catalog` (a miss in a complete catalog only), `checking` (catalog
+ * not loaded, or partial, stale or still loading), `feed-unavailable` or
+ * `feed-off` from a lookup the controller made, and the NORAD id is
+ * re-checked here.
  *
  * Pure module: no platform globals, timers, storage or clocks. Times come in
  * through `nowMs`, the frames and the fixes.
@@ -148,15 +154,20 @@ export const WATCH_EVENT_TYPES = Object.freeze({
  */
 
 /**
- * @typedef {{enabled: boolean, ready?: boolean,
+ * @typedef {{enabled: boolean, ready?: boolean, complete?: boolean,
+ *   unavailable?: boolean,
  *   result: {noradId: number|string, name?: string,
  *     latitude?: number, longitude?: number, lat?: number, lon?: number,
  *     altitudeM?: number}|null,
  *   atMs?: number|null}} SatelliteLookup
  *   The controller's lookup for one NORAD id: whether the satellites layer is
  *   enabled, whether its catalog has loaded (`ready: false` reads as
- *   checking), the plain fields of `findByQuery(String(norad))` (or null),
- *   and when the position was propagated.
+ *   checking), whether that catalog is complete (only `complete: true` lets
+ *   a miss read as not in the catalog; a partial, stale or still-loading
+ *   catalog cannot prove absence), whether the feed failed with nothing
+ *   loaded (`unavailable: true`), the plain fields of
+ *   `findByQuery(String(norad))` (or null), and when the position was
+ *   propagated.
  */
 
 /**
@@ -210,6 +221,7 @@ const MATCH_KIND = Object.freeze({
 
 const DECLINE_AIRCRAFT = 'private-aircraft-class';
 const DECLINE_VESSEL = 'private-vessel-type';
+const CLASS_UNKNOWN = 'class-unknown';
 const SATELLITE_LAYER = 'satellites';
 const CAVEAT_COVERAGE = 'coverage-incomplete';
 const MAX_VALUE_CHARS = 32;
@@ -500,12 +512,35 @@ export function matchAsset(compiled, asset) {
 }
 
 /**
+ * Whether the privacy guard can judge an asset yet. A civil aircraft needs an
+ * adsbdb type code: without one its class is only the default the OpenSky
+ * category gives ('airliner' for no category, small and large alike), which
+ * a business jet passes. A vessel needs an AIS ship type: pleasure craft
+ * often send no static data, so an untyped vessel could be one. Military
+ * aircraft and other kinds need nothing.
+ *
+ * @param {object|null|undefined} asset A frame asset.
+ * @returns {boolean}
+ */
+export function watchClassKnown(asset) {
+  if (!isRecord(asset)) return true;
+  if (asset.kind === 'vessel') {
+    return normalizeVesselType(textOrNull(asset.shipType) ?? '') !== '';
+  }
+  if (asset.kind !== 'aircraft') return true;
+  if (asset.military === true) return true;
+  return textOrNull(asset.typeCode) !== null;
+}
+
+/**
  * The privacy guard. A civil aircraft (`military` not true) classed light,
  * glider or bizjet is declined with 'private-aircraft-class'; a vessel whose
  * normalized AIS type is SAILING or PLEASURE (the numeric codes 36 and 37,
  * or a free-text type naming either as a word) is declined with
  * 'private-vessel-type'. Everything else, including unknown classes and
- * types, is allowed.
+ * types, is allowed here: a civil aircraft whose class is unknown, or a
+ * vessel with no ship type, is held back separately ({@link watchClassKnown}),
+ * since it is not a decline.
  *
  * @param {object|null|undefined} asset A frame asset.
  * @param {typeof WATCHLIST_POLICY} [policy]
@@ -538,12 +573,18 @@ function resolveSatellite(entry, satellite, nowMs) {
   if (!isRecord(satellite) || satellite.enabled !== true) {
     return presence(WATCH_PRESENCE.FEED_OFF, 'feed-off', layer);
   }
+  if (satellite.unavailable === true) {
+    return presence(WATCH_PRESENCE.FEED_UNAVAILABLE, 'feed-unavailable', layer);
+  }
   if (satellite.ready === false) {
     return presence(WATCH_PRESENCE.CHECKING, 'catalog-loading', layer);
   }
   const result = isRecord(satellite.result) ? satellite.result : null;
   if (!result) {
-    return presence(WATCH_PRESENCE.NOT_IN_CATALOG, 'not-in-catalog', layer);
+    // Only a complete catalog proves absence.
+    return satellite.complete === true
+      ? presence(WATCH_PRESENCE.NOT_IN_CATALOG, 'not-in-catalog', layer)
+      : presence(WATCH_PRESENCE.CHECKING, 'catalog-partial', layer);
   }
   if (normalizeValue('norad', result.noradId) !== entry.value) {
     return presence(WATCH_PRESENCE.NOT_IN_CATALOG, 'id-mismatch', layer);
@@ -619,8 +660,9 @@ function collectMatches(entry, views) {
  * 'fix-time-unknown'; outside-coverage 'outside-loaded-area' or
  * 'no-last-position'; feed states carry the deciding layer's answer reason;
  * checking 'awaiting-frame', 'coverage-unknown', a floor answer's reason,
- * 'catalog-loading', 'no-position' or 'bad-entry'; not-in-catalog
- * 'not-in-catalog' or 'id-mismatch'; declined the decline code.
+ * 'class-unknown', 'catalog-loading', 'catalog-partial', 'no-position' or
+ * 'bad-entry'; not-in-catalog 'not-in-catalog' (complete catalogs only) or
+ * 'id-mismatch'; declined the decline code.
  *
  * @param {WatchEntryInput} entry
  * @param {{nowMs?: number, frames?: Map<string, object>|Object<string, object>|object[],
@@ -655,6 +697,17 @@ export function resolveWatchPresence(entry, context = {}) {
       if (!verdict.ok) {
         return presence(WATCH_PRESENCE.DECLINED, verdict.code, { matches });
       }
+    }
+    // Fail closed: a civil aircraft or vessel the guard cannot judge yet is
+    // not followed (no position, so no last-seen fix and no watch events).
+    const unjudged = hits.find(
+      (hit) => !watchClassKnown({ ...hit.asset, military: hit.military }),
+    );
+    if (unjudged) {
+      return presence(WATCH_PRESENCE.CHECKING, CLASS_UNKNOWN, {
+        layerId: unjudged.layerId,
+        matches,
+      });
     }
     let best = hits[0];
     for (const hit of hits) {
@@ -766,6 +819,18 @@ function unseenSpan(record) {
   return Math.max(0, record.lastUnseenAtMs - record.absentSinceMs);
 }
 
+/**
+ * The span a return's covered share is measured over: the unseen span plus
+ * any time past `slackMs` between the latest non-live evaluation and the
+ * return. Nothing was evaluated in that time (a paused feed, a hidden tab),
+ * so it was not observed and counts as uncovered.
+ */
+function returnSpan(record, nowMs, slackMs) {
+  const span = unseenSpan(record);
+  if (record.lastUnseenAtMs === null) return span;
+  return span + Math.max(0, nowMs - record.lastUnseenAtMs - slackMs);
+}
+
 function shareOf(coveredMs, spanMs) {
   if (spanMs === null || !(spanMs > 0)) return null;
   return round3(Math.min(1, Math.max(0, coveredMs) / spanMs));
@@ -795,7 +860,10 @@ function shareOf(coveredMs, spanMs) {
  *   last live evaluation (or the baseline); its covered share is covered
  *   unseen time over the span up to the latest non-live evaluation (the
  *   interval in which the asset comes back is neither seen nor unseen), and
- *   covered time never exceeds that span. `absentMs` runs to the return.
+ *   covered time never exceeds that span. A return more than `confirmMs`
+ *   after the latest non-live evaluation adds the excess to the span as
+ *   uncovered time: no evaluation ran then, so nothing was observed.
+ *   `absentMs` runs to the return.
  *
  * @param {typeof WATCHLIST_POLICY} [policy]
  * @returns {{update: (entryId: string, presence: WatchPresence,
@@ -884,7 +952,10 @@ export function createWatchTracker(policy = WATCHLIST_POLICY) {
           record.absentSinceMs === null
             ? null
             : Math.max(0, nowMs - record.absentSinceMs);
-        const share = shareOf(record.coveredUnseenMs, unseenSpan(record));
+        const share = shareOf(
+          record.coveredUnseenMs,
+          returnSpan(record, nowMs, p.confirmMs),
+        );
         if (
           record.notReportedEmitted &&
           absentMs !== null &&

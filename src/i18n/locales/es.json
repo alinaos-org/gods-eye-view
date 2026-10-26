@@ -2983,7 +2983,6 @@
   "inside {zones}": "dentro de {zones}",
   "Watched assets": "Activos vigilados",
   "No watched assets. Select an aircraft, vessel or satellite and choose Watch selected, or add one by identifier.": "No hay activos vigilados. Selecciona una aeronave, un buque o un satélite y elige Vigilar selección, o añade uno por identificador.",
-  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, and watched assets are never shared.": "Solo identificadores. No se vigilan avionetas privadas, planeadores, reactores ejecutivos ni embarcaciones de recreo o veleros, y los activos vigilados nunca se comparten.",
   "Watch selected": "Vigilar selección",
   "{name} is already watched": "{name} ya está vigilado",
   "Select an aircraft, vessel or satellite": "Selecciona una aeronave, un buque o un satélite",
@@ -3345,5 +3344,12 @@
   "longest present": "presente desde hace más tiempo",
   "WATCH": "VIGILANCIA",
   "Unread watch events": "Eventos de vigilancia sin leer",
-  "Watch zones and watched assets": "Zonas de vigilancia y activos vigilados"
+  "Watch zones and watched assets": "Zonas de vigilancia y activos vigilados",
+  "Identifier type": "Tipo de identificador",
+  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, civil aircraft and vessels are followed only once their type is known, and watched assets are never shared.": "Solo identificadores. No se vigilan avionetas privadas, planeadores, reactores ejecutivos ni embarcaciones de recreo o veleros, las aeronaves civiles y las embarcaciones solo se siguen cuando se conoce su tipo, y los activos vigilados nunca se comparten.",
+  "Clear brief": "Borrar resumen",
+  "Confirm save": "Sí, guardar",
+  "the satellite catalog is incomplete": "el catálogo de satélites está incompleto",
+  "its type is not known yet, so it is not followed": "aún no se conoce su tipo, así que no se sigue",
+  "The type of that aircraft or vessel is not known yet, so Watch does not follow it.": "Aún no se conoce el tipo de esa aeronave o embarcación, así que Vigilancia no la sigue."
 }

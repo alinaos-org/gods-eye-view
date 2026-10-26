@@ -3050,7 +3050,6 @@
   "inside {zones}": "внутри: {zones}",
   "Watched assets": "Объекты наблюдения",
   "No watched assets. Select an aircraft, vessel or satellite and choose Watch selected, or add one by identifier.": "Объектов наблюдения нет. Выберите самолёт, судно или спутник и нажмите «Наблюдать за выбранным» или добавьте объект по идентификатору.",
-  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, and watched assets are never shared.": "Только идентификаторы. Частные лёгкие самолёты, планёры, бизнес-джеты, прогулочные и парусные суда под наблюдение не берутся, а объекты наблюдения никогда не передаются другим.",
   "Watch selected": "Наблюдать за выбранным",
   "{name} is already watched": "«{name}» уже под наблюдением",
   "Select an aircraft, vessel or satellite": "Выберите самолёт, судно или спутник",
@@ -3433,5 +3432,12 @@
   "longest present": "дольше всех внутри",
   "WATCH": "НАБЛЮДЕНИЕ",
   "Unread watch events": "Непрочитанные события наблюдения",
-  "Watch zones and watched assets": "Зоны и объекты наблюдения"
+  "Watch zones and watched assets": "Зоны и объекты наблюдения",
+  "Identifier type": "Тип идентификатора",
+  "Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, civil aircraft and vessels are followed only once their type is known, and watched assets are never shared.": "Только идентификаторы. Частные лёгкие самолёты, планёры, бизнес-джеты, прогулочные и парусные суда под наблюдение не берутся, гражданские воздушные и морские суда отслеживаются, только когда известен их тип, а объекты наблюдения никогда не передаются другим.",
+  "Clear brief": "Очистить сводку",
+  "Confirm save": "Да, сохранить",
+  "the satellite catalog is incomplete": "каталог спутников неполон",
+  "its type is not known yet, so it is not followed": "его тип пока неизвестен, поэтому оно не отслеживается",
+  "The type of that aircraft or vessel is not known yet, so Watch does not follow it.": "Тип этого воздушного или морского судна пока неизвестен, поэтому Наблюдение его не отслеживает."
 }

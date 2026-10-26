@@ -11,6 +11,8 @@
  * Active emergencies card. Each read runs in an idle callback after the
  * layer's refresh, failed refresh or visibility change, at most once per
  * burst; a turned-off layer gives an off frame without reading anything.
+ * Watched satellites are looked up again the same way after the satellites
+ * layer's refresh or visibility change, and on every tick.
  *
  * Privacy (README "The line"): only asset identifiers are kept. Watched
  * assets keep one last-seen fix each, the privacy guard's declines are
@@ -108,6 +110,38 @@ const finite = (value) =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
 const wrapLon = (lon) => ((((lon + 180) % 360) + 360) % 360) - 180;
 const clampLat = (lat) => Math.max(-89, Math.min(89, lat));
+
+/**
+ * What the satellites layer's catalog can answer, from its stats row and
+ * module: `ready` once something is loaded; `complete` when a miss proves
+ * absence (no error, not stale or degraded, and in dense mode the dense load
+ * has finished, which its catalog chip reports as 'active'); `unavailable`
+ * when the feed failed with nothing loaded. A partial CelesTrak catalog
+ * cannot prove absence (controls.js `resolveTrackingRestoreTarget`).
+ */
+function satelliteCatalog(module, stats) {
+  const ready = Number(stats?.count) > 0;
+  const status = typeof stats?.status === 'string' ? stats.status : null;
+  const failed =
+    status === 'unavailable' || status === 'degraded' || Boolean(stats?.error);
+  let denseSettled = true;
+  try {
+    if (module?.getParams?.()?.catalog === 'dense') {
+      const chip = module
+        .getRowControls?.()
+        ?.chips?.find((item) => item?.id === 'catalog');
+      denseSettled = chip?.state === 'active';
+    }
+  } catch {
+    denseSettled = false;
+  }
+  const stale = stats?.stale === true || status === 'stale';
+  return {
+    ready,
+    complete: ready && !failed && !stale && denseSettled,
+    unavailable: !ready && failed,
+  };
+}
 
 /** Best-effort localStorage handle; absent in tests and locked-down browsers. */
 function watchStorage(storage) {
@@ -282,6 +316,10 @@ export function installWatch({
   let selection = null;
   /** layerId → cancel of its queued read. */
   const pending = new Map();
+  /** Cancel of the queued satellite lookup, or null. */
+  let satellitePending = null;
+  /** ICAO24s whose type lookup Live Flights queued this session. */
+  const typesRequested = new Set();
   /** layerId → epoch of its latest frame. */
   const epochs = new Map();
   let needed = new Set();
@@ -462,6 +500,24 @@ export function installWatch({
     );
   }
 
+  /**
+   * Queues one satellite lookup (and render) after the satellites layer's
+   * refresh or visibility change, at most once per burst, so a watched
+   * satellite card follows the layer being turned on or off at once.
+   */
+  function queueSatellites() {
+    if (destroyed || satellitePending || !isActive()) return;
+    const watched = doc.watchlist.some(
+      (entry) => entry.kind === 'satellite' && !entry.declined,
+    );
+    if (!watched) return;
+    satellitePending = idle(() => {
+      satellitePending = null;
+      pollSatellites(now());
+      render();
+    });
+  }
+
   /** Builds one layer's frame from its current records and ingests it. */
   function evaluate(layerId) {
     if (destroyed || !needed.has(layerId)) return;
@@ -512,9 +568,10 @@ export function installWatch({
     if (!entries.length) return;
     const enabled = dataManager?.isEnabled?.(SATELLITE_LAYER) === true;
     const module = enabled ? layerModule(SATELLITE_LAYER) : null;
-    const ready = Boolean(
-      module && Number(layerRow(SATELLITE_LAYER)?.stats?.count) > 0,
-    );
+    const catalog = module
+      ? satelliteCatalog(module, layerRow(SATELLITE_LAYER)?.stats)
+      : { ready: false, complete: false, unavailable: false };
+    const { ready, complete, unavailable } = catalog;
     const rows = entries.map((entry) => {
       let result = null;
       if (ready && typeof module.findByQuery === 'function') {
@@ -536,7 +593,15 @@ export function installWatch({
           };
         }
       }
-      return { norad: entry.value, enabled, ready, result, atMs: nowMs };
+      return {
+        norad: entry.value,
+        enabled,
+        ready,
+        complete,
+        unavailable,
+        result,
+        atMs: nowMs,
+      };
     });
     afterEngine(engine.setSatellites(rows, nowMs), nowMs, { render: false });
   }
@@ -702,6 +767,35 @@ export function installWatch({
     renderer?.sync(view.zones);
     renderer?.setVisible(doc.prefs?.zonesVisible !== false);
     syncToggle();
+    requestUnknownTypes(view);
+  }
+
+  /**
+   * Asks Live Flights for the type of each watched civil aircraft the privacy
+   * guard cannot judge yet (presence reason 'class-unknown'), once per
+   * aircraft and session, so the guard can follow an airliner and decline a
+   * private jet. The layer looks it up ahead of its ambient backlog.
+   */
+  function requestUnknownTypes(view) {
+    const flights = liveModule('flights');
+    if (typeof flights?.requestTypeEnrichment !== 'function') return;
+    for (const row of view?.watchlist ?? []) {
+      if (row?.presence?.reason !== 'class-unknown') continue;
+      const hex =
+        row.match === 'icao24'
+          ? row.value
+          : row.match === 'callsign'
+            ? aircraftByCallsign(row.value, ['flights'])
+            : null;
+      if (!hex || typesRequested.has(hex)) continue;
+      try {
+        if (flights.requestTypeEnrichment(hex) === true) {
+          typesRequested.add(hex);
+        }
+      } catch {
+        // A lookup is best effort; the entry stays unjudged.
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -732,8 +826,8 @@ export function installWatch({
   }
 
   /** The live ICAO24 that reports exactly this callsign, or null. */
-  function aircraftByCallsign(callsign) {
-    for (const layerId of AIRCRAFT_LAYERS) {
+  function aircraftByCallsign(callsign, layerIds = AIRCRAFT_LAYERS) {
+    for (const layerId of layerIds) {
       let found = null;
       try {
         found = liveModule(layerId)?.findByQuery?.(callsign) ?? null;
@@ -863,6 +957,16 @@ export function installWatch({
   function focusEntry(entryId) {
     const entry = doc.watchlist.find((item) => item.id === entryId);
     if (!entry) return 'not-found';
+    const row = engine
+      .view(now())
+      .watchlist.find((item) => item.entryId === entryId);
+    // The guard declined it (perhaps not yet written back): Watch never
+    // locates or follows an asset it refused to watch, nor one it cannot
+    // judge yet.
+    if (entry.declined || row?.presence?.state === 'declined') {
+      return 'declined';
+    }
+    if (row?.presence?.reason === 'class-unknown') return 'class-unknown';
     let result = null;
     if (entry.match === 'icao24') result = focusAircraft(entry.value);
     else if (entry.match === 'callsign') {
@@ -870,9 +974,6 @@ export function installWatch({
     } else if (entry.match === 'mmsi') result = focusVessel(entry.value);
     else if (entry.match === 'norad') result = focusSatellite(entry.value);
     if (result === null) {
-      const row = engine
-        .view(now())
-        .watchlist.find((item) => item.entryId === entryId);
       result = flyToPoint(row?.fix ?? row?.lastSeen, POINT_VIEW_KM.asset);
     }
     return result === null ? 'no-position' : null;
@@ -1140,6 +1241,10 @@ export function installWatch({
         return null;
       }
       case 'storage-keep':
+        // Only a partial read loaded entries to keep; for any other read
+        // error nothing was loaded, so saving would wipe the stored data
+        // (Reset, behind its confirmation, is the only way on).
+        if (readError?.code !== 'partial') return null;
         readError = null;
         persist(now());
         return null;
@@ -1256,7 +1361,6 @@ export function installWatch({
     unsubscribe =
       dataManager?.subscribe?.((change) => {
         if (destroyed || !isRecord(change)) return;
-        if (!Object.hasOwn(WATCH_SOURCES, change.layerId)) return;
         if (
           change.type !== 'refresh' &&
           change.type !== 'refresh-failed' &&
@@ -1264,6 +1368,11 @@ export function installWatch({
         ) {
           return;
         }
+        if (change.layerId === SATELLITE_LAYER) {
+          queueSatellites();
+          return;
+        }
+        if (!Object.hasOwn(WATCH_SOURCES, change.layerId)) return;
         queue(change.layerId);
       }) ?? null;
   } catch {

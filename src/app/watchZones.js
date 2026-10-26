@@ -104,7 +104,8 @@ export function createWatchZoneRenderer({
   let visible = true;
   let views = [];
   let primitive = null;
-  let shownSignature = null;
+  /** What is drawn: '' is no outline, so an empty sync needs no terrain. */
+  let shownSignature = '';
   let labelKey = null;
   let terrain = null;
   let terrainOk = false;

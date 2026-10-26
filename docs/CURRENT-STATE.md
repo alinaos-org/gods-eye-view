@@ -150,7 +150,8 @@ other layer that carried it also answers counted and lacks it. A zone is
 baselined silently on its first answer, after a geometry or filter edit, and
 after a gap without an answer longer than 5 min (aircraft) or 30 min (vessels).
 Entries during that interval are therefore not reported. A gap of at least
-5 min whose count changed reports "rechecked" with the counts before and after.
+5 min whose count changed reports "rechecked" with the counts before and after,
+marking a count that was a lower bound with ≥.
 Fires and quakes baseline silently on their first answer and after a geometry
 or filter edit; adding or removing either kind re-baselines both.
 
@@ -159,8 +160,8 @@ field-tuned:
 
 - **Entry**: 2 fresh fixes in the zone core, plus a position outside the zone
   in the layer's previous answering frame (or the other aircraft layer's
-  latest). Otherwise the asset is first-seen: no event, and its dwell reads as
-  a lower bound (≥). **Exit**: 2 fresh fixes outside the core. A fix is fresh
+  latest), either one at most the re-baseline gap old. Otherwise the asset is
+  first-seen: no event, and its dwell reads as a lower bound (≥). **Exit**: 2 fresh fixes outside the core. A fix is fresh
   only when its receipt time is newer than the last, so a record carried
   through a missed poll confirms nothing. An entry within 5 min of the last
   exit is marked as a re-entry.
@@ -170,11 +171,16 @@ field-tuned:
   √(area/π) for an area).
 - **No longer reported**: an unknown member after 10 min (aircraft) or 60 min
   (vessels) of silence, with counted absence over 3 aircraft epochs or 1 vessel
-  epoch from every layer that carried it; otherwise it expires silently. A fresh
-  fix outside after an unknown spell reports an exit window ("left between …
-  and …").
+  epoch from every layer that carried it; otherwise it expires silently. It is
+  reported only while the zone and every layer that carried the member answer
+  counted: a held feed or an uncovered zone is not observed silence, so the
+  event waits, and after twice the expiry time the member expires silently. A
+  fresh fix outside after an unknown spell reports an exit window ("left
+  between … and …").
 - **Emergencies**: a start needs 2 fresh reports of one emergency kind 20 s to
-  5 min apart; an end needs 2 fresh polls without it. A track missing from 3 new
+  5 min apart (by upstream contact time when both carry one, so one message
+  seen by both aircraft layers counts once); an end needs 2 fresh polls without
+  it. A track missing from 3 new
   counted epochs of every layer that carried it, each covering its last
   position, is reported as no longer reported with the outcome not known.
   Events cover aircraft inside zones set to report all events, watched aircraft,
@@ -187,7 +193,10 @@ field-tuned:
   kind on and counted, coverage
   of the last position, and a report earlier in the session. A return after at
   least 20 min, with at least 80% of the absence covered, reads as reported
-  again. Satellites show a computed orbit position, never an observation.
+  again; time with no evaluation (a hidden tab) counts as uncovered, and a fix
+  that only aged while no new data arrived is not a stale stretch. Satellites
+  show a computed orbit position, never an observation, and a miss counts as
+  "not in the catalog" only while the CelesTrak catalog is complete.
 - **Fires and quakes**: one fire event per zone and FIRMS epoch, an alert when
   the strongest detection reaches 100 MW. One quake event per new USGS id at or
   above the zone's minimum magnitude (default M2.5, optional 25 or 100 km
@@ -216,8 +225,14 @@ prefixes, which would follow whole operators), an MMSI or a NORAD id, with the
 feed's display label. There are no owner, registrant or free-text fields. The
 watchlist declines civil aircraft classed light, glider or business jet, and
 vessels typed sailing or pleasure: the craft most likely to be one private
-person's. The rule is one constant (`WATCHLIST_POLICY`) kept for a maintainer
-decision, and a declined entry keeps no position. Each entry keeps one
+person's. A civil aircraft is followed only once adsbdb has given its type
+code (Watch asks Live Flights for it), since without one its class is only
+the OpenSky default and a business jet would pass; until then it shows no
+position, saves no fix and raises no watch events. A vessel likewise needs an
+AIS ship type (code 0, the reserved codes 100 to 255 or no static data do not
+count), since pleasure craft often send none. The rule is one constant
+(`WATCHLIST_POLICY`) kept for a maintainer decision, and a declined entry keeps
+no position and cannot be focused. Each entry keeps one
 last-seen fix, not a track. The minimum zone size (1 km radius, 2 km²) keeps a
 zone from being drawn around a single house. Events live in memory for the tab
 only, because a persisted log would keep asset positions across sessions; a
@@ -227,8 +242,9 @@ never put in share links or exported.
 Storage: `gev:watch:v1` in localStorage holds the zones, watched assets and
 three preferences, up to 256 KiB. When the saved data cannot be read (damaged,
 too large, from a newer version, or partly unreadable), every save is blocked
-until the person chooses Keep loaded entries and save, or Reset saved watch
-data.
+until the person chooses Keep loaded entries and save (offered only for a
+partly unreadable document, since otherwise nothing was loaded) or Reset saved
+watch data; both need a confirming second click.
 
 Deliberately unchanged: voice (no new actions; the `set_panel_open` enum,
 instructions and layer manifest are as before), the MCP tools (they cannot
@@ -241,9 +257,13 @@ them.
 
 Known limitations:
 
-- AIS vessels are view-scoped: vessel coverage is the area of the last
-  reconciled snapshot, so zones away from the view read UNKNOWN (outside the
-  loaded area) or a lower bound until the camera goes there.
+- AIS vessels are asked for by the area in view, but `/api/vessels` ignores
+  the area and returns the newest `maxRows` rows worldwide. Vessel coverage is
+  the area of the last reconciled snapshot, so zones away from the view read
+  UNKNOWN (outside the loaded area) or a lower bound until the camera goes
+  there; a reply that fills the row cap (12,000 by default) vouches for no
+  area at all, so every vessel zone then reads a lower bound and vessel
+  absence is never counted.
 - When Live Flights falls back to its regional feed, coverage is the 250 nm
   disc around the camera nadir less a 25 km margin (438 km). Zones beyond it
   read UNKNOWN or a lower bound, and never "no longer reported".

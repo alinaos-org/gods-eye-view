@@ -251,6 +251,10 @@ export function createRailCardBlocks({ container, cardId, onParams }) {
         else if (props.type === 'result') {
           set(block.label, 'textContent', props.label);
           set(block.clear, 'hidden', !props.clear);
+          // An owner names what its × clears; a reading is the default.
+          const clearLabel = props.clear?.label || t('Clear reading');
+          attribute(block.clear, 'aria-label', clearLabel);
+          set(block.clear, 'title', clearLabel);
           block.children.update([
             { id: 'result-lines', type: 'lines', lines: props.lines },
           ]);

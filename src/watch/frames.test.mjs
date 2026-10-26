@@ -744,6 +744,7 @@ test('toAsset: aircraft shape carries asset identifiers only', () => {
     onGround: false,
     military: false,
     aircraftClass: 'airliner',
+    typeCode: null,
     squawk: '7700',
     emergency: true,
     emergencyKind: 'general',

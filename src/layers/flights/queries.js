@@ -280,8 +280,8 @@ export function createQueries({
    *   operator: string|null, squawk: string|null, emergency: boolean,
    *   emergencyKind: string|null, emergencySource: 'squawk'|'ads-b'|null,
    *   emergencyBroadcast: string|null, lastContactAtMs: number|null,
-   *   receivedAtMs: number|null, routeOrigin: string|null,
-   *   routeDestination: string|null}}
+   *   receivedAtMs: number|null, typeCode: string|null,
+   *   routeOrigin: string|null, routeDestination: string|null}}
    */
 
   function mapAnalystRecord(
@@ -333,6 +333,10 @@ export function createQueries({
       // carried through a missed poll keeps its old receipt (and its squawk),
       // so a repeat is never mistaken for a new observation.
       receivedAtMs: num(info?.observedReceiptMs),
+      // The adsbdb type code once enrichment found one, else null. Without it
+      // `aircraftClass` is only the OpenSky category's default, which cannot
+      // tell a business jet from an airliner (the Watch privacy guard).
+      typeCode: text(info?.typeCode),
       routeOrigin: routeOk ? text(info?.route?.origin?.code) : null,
       routeDestination: routeOk ? text(info?.route?.destination?.code) : null,
     };
@@ -1041,6 +1045,24 @@ export function createQueries({
         flightState.feed._lastCoverage,
         flightState.feed._lastCoverageQuery,
       );
+    },
+
+    /**
+     * Asks adsbdb for an aircraft's type ahead of the ambient backlog, once
+     * per session, for an aircraft in memory. The Watch privacy guard follows
+     * a civil aircraft only once its type is known.
+     * @param {string} icao24 - ICAO 24-bit transponder address.
+     * @returns {boolean} false for an unknown or malformed address.
+     */
+    requestTypeEnrichment(icao24) {
+      const id = String(icao24 ?? '')
+        .trim()
+        .toLowerCase();
+      if (!/^[0-9a-f]{6}$/.test(id) || !flightState.records.data.has(id)) {
+        return false;
+      }
+      parts.enrichment._requestTypeEnrichment(id, true);
+      return true;
     },
   };
 

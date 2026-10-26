@@ -84,6 +84,7 @@ const REASONS = Object.freeze({
   ),
   'awaiting-frame': msg('waiting for the first data'),
   'catalog-loading': msg('the satellite catalog is loading'),
+  'catalog-partial': msg('the satellite catalog is incomplete'),
   'no-position': msg('no computed position'),
   'bad-entry': msg('the entry cannot be read'),
   'not-in-catalog': msg('not in the satellite catalog'),
@@ -92,6 +93,7 @@ const REASONS = Object.freeze({
     'private light aircraft, gliders and business jets are not watched',
   ),
   'private-vessel-type': msg('pleasure and sailing craft are not watched'),
+  'class-unknown': msg('its type is not known yet, so it is not followed'),
 });
 const TRANSPORT_CONNECTING = msg('the AIS connection is still connecting');
 const TRANSPORT_NOT_LIVE = msg('the AIS connection is not live');
@@ -690,8 +692,12 @@ function eventSentence(event, zone, at) {
         parts: [
           finite(params.before) !== null && finite(params.after) !== null
             ? t('{before} before, {after} now', {
-                before: countText(kind, params.before),
-                after: countText(kind, params.after),
+                before: params.beforeFloor
+                  ? lowerBoundText(countText(kind, params.before))
+                  : countText(kind, params.before),
+                after: params.afterFloor
+                  ? lowerBoundText(countText(kind, params.after))
+                  : countText(kind, params.after),
               })
             : '',
         ],
@@ -1059,6 +1065,9 @@ const ERRORS = Object.freeze({
   invalid: msg('The watch data cannot be changed.'),
   'not-found': msg('That item no longer exists.'),
   declined: msg('That asset is not watched.'),
+  'class-unknown': msg(
+    'The type of that aircraft or vessel is not known yet, so Watch does not follow it.',
+  ),
   'no-selection': msg('Select an aircraft, vessel or satellite first.'),
   'no-position': msg('The selection has no current position.'),
 });
@@ -1224,11 +1233,11 @@ function dwellPart(values, nowMs) {
   const entered = time(values.enteredAtMs);
   const now = time(nowMs);
   if (entered === null || now === null) return '';
-  return t('inside for {duration}', {
-    duration: formatWatchDuration(now - entered, {
-      lowerBound: values.lowerBound === true,
-    }),
+  // An entry stamped a little ahead of the clock has no duration to show.
+  const duration = formatWatchDuration(now - entered, {
+    lowerBound: values.lowerBound === true,
   });
+  return duration ? t('inside for {duration}', { duration }) : '';
 }
 
 function speedKnots(mps) {
@@ -1277,10 +1286,11 @@ function briefLine(line, ctx) {
       const label = Object.hasOwn(BUCKET_LABELS, type)
         ? t(BUCKET_LABELS[type])
         : displayVesselType(type ?? '');
+      const count = formatNumber(finite(v.count) ?? 0);
       return item([
         t('{type}: {count}', {
           type: label,
-          count: formatNumber(finite(v.count) ?? 0),
+          count: v.floor === true ? lowerBoundText(count) : count,
         }),
       ]);
     }

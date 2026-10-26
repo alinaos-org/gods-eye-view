@@ -226,6 +226,7 @@ test('a new vessel feed has no applied area until a snapshot is reconciled', () 
   const feed = createVesselFeed();
   assert.equal(feed.appliedArea, null);
   assert.equal(feed.appliedAreaKnown, false);
+  assert.equal(feed.appliedTruncated, false);
 });
 
 test('the applied area is the reconciled snapshot area, never only the area asked for', async (t) => {
@@ -284,6 +285,26 @@ test('the applied area is the reconciled snapshot area, never only the area aske
   assert.deepEqual(probe.asked.at(-1), { maxRows: 500 });
   assert.equal(probe.feed.appliedArea, null);
   assert.equal(probe.feed.appliedAreaKnown, true);
+});
+
+test('a reply that fills the row cap is marked truncated; a shorter one is not', async () => {
+  const probe = areaSetup();
+  await probe.methods.update();
+  assert.equal(probe.feed.appliedTruncated, false);
+  // 500 rows asked for and 500 came back: the server may have cut it.
+  probe.respondWith(async () => ({
+    ...areaSnapshot(['111']),
+    rawRowCount: 500,
+  }));
+  await probe.methods.update();
+  assert.equal(probe.feed.appliedAreaKnown, true);
+  assert.equal(probe.feed.appliedTruncated, true);
+  probe.respondWith(async () => ({
+    ...areaSnapshot(['111']),
+    rawRowCount: 499,
+  }));
+  await probe.methods.update();
+  assert.equal(probe.feed.appliedTruncated, false);
 });
 
 test('a vessel answer that lost ownership of the layer applies no area', async () => {

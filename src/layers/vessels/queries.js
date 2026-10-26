@@ -563,12 +563,17 @@ export function createQueries({
      * the last reconciled snapshot, not the area last asked for (which moves
      * before a request resolves and stays moved when it fails). Unknown until
      * a snapshot is reconciled, global after a wide view asked for every
-     * vessel. Plain JSON, a fresh object on every call.
+     * vessel. Unknown, too, when that snapshot filled the row cap: the
+     * server keeps only the newest rows (it may ignore the area), so a full
+     * reply may lack vessels that are still in the area. Plain JSON, a fresh
+     * object on every call.
      * @returns {{kind: 'global'}|{kind: 'circle', lat: number, lon: number,
      *   radiusKm: number}|{kind: 'unknown'}}
      */
     getCoverageArea() {
-      if (!state.feed.appliedAreaKnown) return { kind: 'unknown' };
+      if (!state.feed.appliedAreaKnown || state.feed.appliedTruncated) {
+        return { kind: 'unknown' };
+      }
       const area = state.feed.appliedArea;
       if (!area) return { kind: 'global' };
       const { lat, lon, radiusKm } = area;

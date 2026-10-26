@@ -208,6 +208,26 @@ test('no zones yet: no overlay source is registered', (t) => {
   assert.deepEqual(overlay.calls, []);
 });
 
+test('no zones yet: the terrain table is not requested', async (t) => {
+  let attempts = 0;
+  const { renderer, drawn } = setup(t, {
+    terrainReady: () => {
+      attempts += 1;
+      return Promise.resolve();
+    },
+  });
+  renderer.sync([]);
+  renderer.sync(null);
+  await settle();
+  assert.equal(attempts, 0);
+  assert.equal(renderer.diagnostics().builds, 0);
+  // The first outline asks for it.
+  renderer.sync(zoneViews());
+  await settle();
+  assert.equal(attempts, 1);
+  assert.equal(drawn().length, 1);
+});
+
 test('at most 24 labels, ordered by priority', (t) => {
   const { renderer, overlay } = setup(t);
   const [view] = zoneViews();

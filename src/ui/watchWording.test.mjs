@@ -211,6 +211,30 @@ test('zone wording: re-entry, lower-bound dwell, exit windows and no longer repo
   assert.doesNotMatch(parked, /descending|altitude/);
 });
 
+test('a recheck words a floor count as a lower bound', () => {
+  const recheck = (params, caveats = []) =>
+    describeWatchEvent(
+      eventOf('zone-rechecked', {
+        params: { gapMs: 12 * MIN, before: 3, after: 5, ...params },
+        caveats,
+      }),
+      { zoneName: 'Harbour' },
+    ).text;
+  assert.match(
+    recheck({ beforeFloor: false, afterFloor: false }),
+    /3 aircraft before, 5 aircraft now/,
+  );
+  const floor = recheck({ beforeFloor: false, afterFloor: true }, [
+    'lower-bound',
+  ]);
+  assert.match(floor, /3 aircraft before, ≥ 5 aircraft now/);
+  assert.match(floor, /the count is a lower bound/);
+  assert.match(
+    recheck({ beforeFloor: true, afterFloor: false }),
+    /≥ 3 aircraft before, 5 aircraft now/,
+  );
+});
+
 test('emergency wording quotes the code only when the squawk names it', () => {
   const squawk = describeWatchEvent(
     eventOf('emergency-start', { caveats: ['on-ground'] }),
@@ -259,6 +283,10 @@ test('every answer reason and presence reason has a phrase', () => {
   }
   assert.notEqual(describeReason('transport-down'), fallback);
   assert.equal(describeReason(null), '');
+  assert.equal(
+    describeReason('catalog-partial'),
+    'the satellite catalog is incomplete',
+  );
 });
 
 test('answers: counts, "at least", HELD with its data time, UNKNOWN with why', () => {
@@ -594,8 +622,9 @@ test('a place brief words every line code honestly', () => {
   assert.match(text, /squawk 7700 \(General emergency\)/);
   assert.match(text, /inside for ≥ 20 min/);
   assert.match(text, /Vessels: At least 3 vessels/);
-  assert.match(text, /• CARGO: 2/);
-  assert.match(text, /• No type reported: 1/);
+  // Under a floor answer each type count is a lower bound too.
+  assert.match(text, /• CARGO: ≥ 2/);
+  assert.match(text, /• No type reported: ≥ 1/);
   assert.match(text, /NORDIC STAR · CARGO · 0\.2\skt/);
   assert.doesNotMatch(text, /anchor|moor/i);
   assert.match(
@@ -630,6 +659,41 @@ function frame(layerId, nowMs, rows, coverage = { kind: 'global' }) {
     previousEpochMs: null,
   });
 }
+
+test('a brief occupant entered just ahead of the clock has no dangling dwell', () => {
+  const brief = {
+    zoneId: 'z',
+    name: 'Harbour',
+    generatedAtMs: T0,
+    sections: [
+      {
+        id: 'vessels',
+        answer: 'counted',
+        reason: null,
+        count: 1,
+        floor: false,
+        asOfMs: T0,
+        buckets: [{ key: 'CARGO', count: 1 }],
+        highlights: [
+          {
+            label: 'EVER GIVEN',
+            kind: 'vessel',
+            facts: {
+              speedKts: 3.2,
+              enteredAtMs: T0 + 45_000,
+              lowerBound: true,
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const lines = placeBriefText(brief);
+  // A counted section keeps exact type counts.
+  assert.ok(lines.includes('• CARGO: 1'), lines.join('\n'));
+  assert.match(lines.at(-1), /^• EVER GIVEN · 3\.2\skt$/);
+  for (const line of lines) assertClean(line, 'brief line');
+});
 
 test('a brief from the real engine reads cleanly', () => {
   const made = createCircleZone(

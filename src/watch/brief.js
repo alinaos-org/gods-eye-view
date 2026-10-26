@@ -155,6 +155,8 @@ export const BRIEF_EVENT_PARAM_KEYS = Object.freeze([
   'gapMs',
   'before',
   'after',
+  'beforeFloor',
+  'afterFloor',
   'reason',
   'pausedMs',
   'maxFrpMw',
@@ -1272,8 +1274,9 @@ function activityLines(lines, section) {
  *   `maxMagnitude` and `newestTimeMs`.
  * - Item lines carry `label` and the highlight's facts; watched items add
  *   `kind` and `presence`, occupants add `kind`.
- * - 'brief-vessel-type' `{type, count}` per bucket (type may be a
- *   {@link BRIEF_BUCKET_KEYS} code).
+ * - 'brief-vessel-type' `{type, count, floor}` per bucket (type may be a
+ *   {@link BRIEF_BUCKET_KEYS} code; `floor` when the section's answer is a
+ *   lower bound, so each bucket is one too).
  * - 'brief-occupancy-series' `{kind, sinceMs, min, median, max, samples,
  *   floorSamples}` per kind with a summary, 'brief-occupancy-gap' `{kind}`
  *   per kind without one.
@@ -1319,6 +1322,8 @@ export function placeBriefLines(brief) {
             values: {
               type: textOrNull(bucket.key),
               count: countOrNull(bucket.count),
+              // Under a floor answer each bucket is a lower bound too.
+              floor: section.floor === true,
             },
           });
         }

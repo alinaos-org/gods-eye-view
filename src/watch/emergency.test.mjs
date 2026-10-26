@@ -626,6 +626,45 @@ test('a flights and military duplicate in the same epoch gives one start', () =>
   assert.equal(tracker.diagnostics().tracked, 1);
 });
 
+test('one upstream contact seen by both layers never confirms a start', () => {
+  const { tracker, poll } = setup();
+  const contact = T0 - 5 * SEC;
+  poll('flights', T0, [row(T0, { lastContactAtMs: contact, military: true })]);
+  // Military receives the same message 25 s later (or an older cached
+  // copy): fresh for military, but no newer than the fix already applied.
+  assert.deepEqual(
+    poll('military', T0 + 25 * SEC, [
+      row(T0 + 25 * SEC, { lastContactAtMs: contact }),
+    ]),
+    [],
+  );
+  assert.deepEqual(
+    poll('military', T0 + 50 * SEC, [
+      row(T0 + 50 * SEC, { lastContactAtMs: contact - 40 * SEC }),
+    ]),
+    [],
+  );
+  assert.equal(phaseOf(tracker), EMERGENCY_PHASE.CANDIDATE);
+});
+
+test('the confirming span is measured between contact times', () => {
+  const { tracker, poll } = setup();
+  poll('flights', T0, [row(T0, { lastContactAtMs: T0, military: true })]);
+  // Received 25 s later but broadcast only 5 s after the first contact.
+  assert.deepEqual(
+    poll('military', T0 + 25 * SEC, [
+      row(T0 + 25 * SEC, { lastContactAtMs: T0 + 5 * SEC }),
+    ]),
+    [],
+  );
+  assert.equal(phaseOf(tracker), EMERGENCY_PHASE.CANDIDATE);
+  const out = poll('military', T0 + 40 * SEC, [
+    row(T0 + 40 * SEC, { lastContactAtMs: T0 + 21 * SEC }),
+  ]);
+  assert.deepEqual(types(out), ['emergency-start']);
+  assert.equal(out[0].sinceMs, T0);
+});
+
 test('unresolved needs counted absence from every layer that carried it', () => {
   const { tracker, poll } = setup();
   for (let i = 0; i < 3; i += 1) {

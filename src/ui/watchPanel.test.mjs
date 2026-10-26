@@ -10,7 +10,11 @@ import {
 import { createWatchEngine } from '../watch/engine.js';
 import { buildFrame } from '../watch/frames.js';
 import { railFixture } from './railTestFixture.mjs';
-import { WATCH_CONFIRM_MS, createWatchPanel } from './watchPanel.js';
+import {
+  WATCH_CONFIRM_MIN_MS,
+  WATCH_CONFIRM_MS,
+  createWatchPanel,
+} from './watchPanel.js';
 import { describeWatchError } from './watchWording.js';
 
 const T0 = Date.UTC(2026, 9, 26, 12, 0, 0);
@@ -357,6 +361,35 @@ test('delete needs a second click within 3 s', () => {
   assert.equal(remove().textContent, 'Confirm delete');
 });
 
+test('a double-click or a held Enter never confirms a delete', () => {
+  const h = setup();
+  h.view.update(model());
+  openCard(h, 'zone:z-harbour');
+  const remove = () => h.action('zone:z-harbour', 'delete');
+  remove().click();
+  h.advance(120);
+  remove().click();
+  assert.deepEqual(h.actions, []);
+  assert.equal(remove().textContent, 'Confirm delete');
+  // Key auto-repeat fires click again and again: none of them confirm.
+  const repeat = new Event('keydown');
+  Object.defineProperty(repeat, 'repeat', { value: true });
+  h.f.container.dispatchEvent(repeat);
+  h.advance(WATCH_CONFIRM_MIN_MS);
+  remove().click();
+  assert.deepEqual(h.actions, []);
+  h.f.container.dispatchEvent(new Event('keyup'));
+  remove().click();
+  assert.deepEqual(h.actions, [{ type: 'zone-delete', zoneId: 'z-harbour' }]);
+  // A pointer press also ends a repeat whose key went up elsewhere.
+  h.f.container.dispatchEvent(repeat);
+  h.f.container.dispatchEvent(new Event('pointerdown'));
+  remove().click();
+  h.advance(WATCH_CONFIRM_MIN_MS);
+  remove().click();
+  assert.equal(h.actions.length, 2);
+});
+
 test('the read-error banner offers keep and a confirmed reset', () => {
   const h = setup();
   h.view.update(
@@ -379,16 +412,44 @@ test('the read-error banner offers keep and a confirmed reset', () => {
   const [keep, reset] = h.within(banner, (node) =>
     node.className?.includes('watch-banner-actions'),
   ).children;
+  assert.equal(keep.hidden, false);
+  // Keep drops the skipped entries for good, so it needs a second click.
+  keep.click();
+  assert.deepEqual(h.actions, []);
+  assert.equal(keep.textContent, 'Confirm save');
+  h.advance(WATCH_CONFIRM_MIN_MS);
   keep.click();
   assert.deepEqual(h.actions.at(-1), { type: 'storage-keep' });
   reset.click();
   assert.equal(h.actions.length, 1);
   assert.equal(reset.textContent, 'Confirm reset');
+  h.advance(WATCH_CONFIRM_MIN_MS);
   reset.click();
   assert.deepEqual(h.actions.at(-1), { type: 'storage-reset' });
   h.view.update(model());
   assert.equal(banner.hidden, true);
   assert.equal(writeError.hidden, true);
+});
+
+test('Keep is offered only when a partial read loaded entries', () => {
+  for (const code of [
+    'unsupported-version',
+    'malformed',
+    'too-large',
+    'unavailable',
+  ]) {
+    const h = setup();
+    h.view.update(model({ readError: { code }, writeError: 'read-error' }));
+    const banner = h.f.find((node) =>
+      node.className?.includes('watch-banner panel-surface-error'),
+    );
+    const [keep, reset] = h.within(banner, (node) =>
+      node.className?.includes('watch-banner-actions'),
+    ).children;
+    assert.equal(keep.hidden, true, code);
+    assert.equal(reset.hidden, false, code);
+    h.view.destroy();
+  }
 });
 
 test('identifiers: bad ids and duplicates are refused in place, a good one is sent once', () => {
@@ -411,6 +472,11 @@ test('identifiers: bad ids and duplicates are refused in place, a good one is se
   );
   assert.ok(form, 'form mounted in the watched card');
   assert.equal(form.hidden, false);
+  const group = h.within(form, (node) =>
+    node.className?.includes('watch-inline-chips'),
+  );
+  assert.equal(group.getAttribute('role'), 'group');
+  assert.equal(group.getAttribute('aria-label'), 'Identifier type');
   const input = h.within(form, (node) => node.tagName === 'INPUT');
   const error = h.within(form, (node) =>
     node.className?.includes('watch-inline-error'),
@@ -547,6 +613,7 @@ test('watched assets: select a row, focus it, remove after confirmation', () => 
   });
   h.action('watched', 'remove').click();
   assert.equal(h.actions.length, 1);
+  h.advance(WATCH_CONFIRM_MIN_MS);
   h.action('watched', 'remove').click();
   assert.deepEqual(h.actions.at(-1), {
     type: 'watch-remove',
@@ -555,6 +622,59 @@ test('watched assets: select a row, focus it, remove after confirmation', () => 
   h.action('watched', 'watch-selection').click();
   assert.deepEqual(h.actions.at(-1), { type: 'watch-add-selection' });
   assert.match(allText(card), /NORDIC STAR/);
+});
+
+test('watched assets: Focus is off for a declined entry', () => {
+  const h = setup();
+  const base = model();
+  const declinedRow = {
+    entryId: 'w-priv',
+    kind: 'aircraft',
+    match: 'icao24',
+    value: 'b1b1b1',
+    label: null,
+    presence: { state: 'declined', reason: 'private-aircraft-class' },
+    fix: null,
+    layerId: null,
+    zoneIds: [],
+    matches: 1,
+    lastSeen: null,
+    sinceMs: T0,
+  };
+  h.view.update(model({ view: { ...base.view, watchlist: [declinedRow] } }));
+  const card = openCard(h, 'watched');
+  h.within(
+    card,
+    (node) =>
+      node.dataset?.listItemId === 'w-priv' && node.tagName === 'BUTTON',
+  ).click();
+  assert.equal(h.action('watched', 'focus').disabled, true);
+  assert.match(allText(h.card('watched')), /That asset is not watched\./);
+  // Remove stays available.
+  assert.equal(h.action('watched', 'remove').disabled, false);
+  // An aircraft the guard cannot judge yet is not located either.
+  h.view.update(
+    model({
+      view: {
+        ...base.view,
+        watchlist: [
+          {
+            ...declinedRow,
+            presence: { state: 'checking', reason: 'class-unknown' },
+          },
+        ],
+      },
+    }),
+  );
+  assert.equal(h.action('watched', 'focus').disabled, true);
+  assert.match(
+    allText(h.card('watched')),
+    /The type of that aircraft or vessel is not known yet/,
+  );
+  assert.match(
+    allText(h.card('watched')),
+    /its type is not known yet, so it is not followed/,
+  );
 });
 
 test('add zone: radius chips, selection default radius, drawn shapes and limits', () => {
@@ -598,8 +718,32 @@ test('add zone: radius chips, selection default radius, drawn shapes and limits'
     type: 'zone-add-annotation',
     annotationId: 'anno-3',
   });
+  // An aircraft without a current position is named as such, not as no
+  // selection at all.
+  h.view.update(
+    model({
+      selection: {
+        kind: 'aircraft',
+        match: 'callsign',
+        value: 'RYR12',
+        label: 'RYR12',
+        watched: false,
+        zoneable: false,
+      },
+    }),
+  );
+  assert.equal(h.action('add-zone', 'selection').disabled, true);
+  assert.match(
+    allText(h.card('add-zone')),
+    /The selection has no current position\./,
+  );
+  assert.doesNotMatch(
+    allText(h.card('add-zone')),
+    /Select an aircraft or vessel/,
+  );
   h.view.update(model({ selection: null }));
   assert.equal(h.action('add-zone', 'selection').disabled, true);
+  assert.match(allText(h.card('add-zone')), /Select an aircraft or vessel/);
   const zones = Array.from({ length: 24 }, (_, i) => ({
     ...ZONE,
     id: `z-${i}aaaa`,
@@ -640,10 +784,28 @@ test('inbox: unread badge caps at 99+, alert filter, focus and confirmed clear',
   assert.deepEqual(h.actions.at(-1), { type: 'inbox-mark-all-read' });
   h.action('inbox', 'clear').click();
   assert.notDeepEqual(h.actions.at(-1), { type: 'inbox-clear' });
+  h.advance(WATCH_CONFIRM_MIN_MS);
   h.action('inbox', 'clear').click();
   assert.deepEqual(h.actions.at(-1), { type: 'inbox-clear' });
   h.view.update(model());
   assert.equal(h.countBadge.textContent, '');
+  assert.equal(h.action('inbox', 'read').disabled, true);
+});
+
+test('inbox: unread info rows carry no marker that Mark all read cannot clear', () => {
+  const h = setup();
+  const rows = [
+    row('e-2', { severity: 'info', type: 'feed-resumed', zoneId: null }),
+    row('e-1', { severity: 'notice' }),
+  ];
+  h.view.update(model({ inbox: { rows, alertRows: [], unread: 1 } }));
+  const text = allText(h.card('inbox'));
+  assert.match(text, /● 11:58 UTC/);
+  assert.equal(text.match(/●/g).length, 1);
+  h.view.update(
+    model({ inbox: { rows: [rows[0]], alertRows: [], unread: 0 } }),
+  );
+  assert.doesNotMatch(allText(h.card('inbox')), /●/);
   assert.equal(h.action('inbox', 'read').disabled, true);
 });
 
@@ -677,7 +839,10 @@ test('briefs render as a result block, copy as shown and clear', () => {
     copied.text,
     'Brief: Harbour approach · 12:00 UTC\nAircraft: At least 3 aircraft · only part of the zone is in the loaded area · as of 11:59 UTC',
   );
-  h.within(result, (node) => node.dataset?.actionId === 'clear').click();
+  const clear = h.within(result, (node) => node.dataset?.actionId === 'clear');
+  assert.equal(clear.getAttribute('aria-label'), 'Clear brief');
+  assert.equal(clear.title, 'Clear brief');
+  clear.click();
   assert.deepEqual(h.actions.at(-1), {
     type: 'zone-brief-clear',
     zoneId: 'z-harbour',
@@ -706,6 +871,56 @@ test('rename opens prefilled, refuses an empty name and sends a clean one', () =
     { type: 'zone-rename', zoneId: 'z-harbour', name: 'Outer harbour' },
   ]);
   assert.equal(form.hidden, true);
+});
+
+test('closing a form or deleting a zone keeps keyboard focus in the panel', () => {
+  const h = setup();
+  h.view.update(model());
+  const doc = h.f.document;
+  const card = openCard(h, 'zone:z-harbour');
+  const rename = () => h.action('zone:z-harbour', 'rename');
+  const form = () =>
+    h.within(card, (node) => node.className?.includes('watch-inline-form'));
+  const input = () => h.within(form(), (node) => node.tagName === 'INPUT');
+  const buttons = () =>
+    h.within(form(), (node) => node.className?.includes('watch-inline-buttons'))
+      .children;
+  // Save, Escape and Cancel each give focus back to Rename.
+  rename().click();
+  assert.ok(doc.activeElement === input(), 'focus moves into the form');
+  input().value = 'Outer harbour';
+  buttons()[0].click();
+  assert.ok(doc.activeElement === rename(), 'focus returns to Rename');
+  rename().click();
+  const escape = new Event('keydown');
+  Object.defineProperty(escape, 'key', { value: 'Escape' });
+  input().dispatchEvent(escape);
+  assert.equal(form().hidden, true);
+  assert.ok(doc.activeElement === rename(), 'focus returns to Rename');
+  rename().click();
+  buttons()[1].click();
+  assert.ok(doc.activeElement === rename(), 'focus returns to Rename');
+  // Add by identifier, then Cancel.
+  openCard(h, 'watched');
+  h.action('watched', 'add-id').click();
+  const idForm = h.within(h.card('watched'), (node) =>
+    node.className?.includes('watch-inline-form'),
+  );
+  h.within(idForm, (node) =>
+    node.className?.includes('watch-inline-buttons'),
+  ).children[1].click();
+  assert.ok(
+    doc.activeElement === h.action('watched', 'add-id'),
+    'focus returns to Add by identifier',
+  );
+  // A confirmed delete focuses the card after the deleted one.
+  h.action('zone:z-harbour', 'delete').click();
+  h.advance(WATCH_CONFIRM_MIN_MS);
+  h.action('zone:z-harbour', 'delete').click();
+  assert.ok(
+    doc.activeElement === h.card('add-zone').children[0],
+    'focus moves to the next card',
+  );
 });
 
 test('settings send prefs patches', () => {

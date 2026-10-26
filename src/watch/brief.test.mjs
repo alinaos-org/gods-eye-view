@@ -1646,6 +1646,7 @@ test('placeBriefLines: one header, section lines in order, known codes', () => {
   assert.deepEqual(byCode('brief-vessel-type')[0].values, {
     type: 'CARGO',
     count: 1,
+    floor: false,
   });
   assert.deepEqual(byCode('brief-vessel-item')[0].values, {
     label: 'NORDIC STAR',

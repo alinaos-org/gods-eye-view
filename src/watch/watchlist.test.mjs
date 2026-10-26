@@ -11,6 +11,7 @@ import {
   createWatchTracker,
   matchAsset,
   resolveWatchPresence,
+  watchClassKnown,
   watchEligibility,
 } from './watchlist.js';
 
@@ -59,6 +60,8 @@ function aircraft(overrides = {}) {
     onGround: false,
     military: false,
     aircraftClass: 'airliner',
+    // Enriched: the guard can judge it (see watchClassKnown).
+    typeCode: 'A320',
     squawk: null,
     emergency: false,
     emergencyKind: null,
@@ -401,6 +404,79 @@ test('watchEligibility allows other kinds and honours a policy override', () => 
     watchEligibility(aircraft({ aircraftClass: 'uav' }), policy),
     { ok: false, code: 'private-aircraft-class' },
   );
+});
+
+test('a civil aircraft without a type code is never followed', async () => {
+  const { classifyAircraft } = await import('../data/aircraftClass.js');
+  // OpenSky gives no category for most aircraft, and small and large share
+  // the airliner default: a business jet passes the class check alone.
+  for (const category of [0, 1, 3, 4, null]) {
+    const aircraftClass = classifyAircraft({ typeCode: null, category });
+    assert.equal(aircraftClass, 'airliner', `category ${category}`);
+    const asset = aircraft({ aircraftClass, typeCode: null });
+    assert.deepEqual(watchEligibility(asset), { ok: true });
+    assert.equal(watchClassKnown(asset), false);
+    const unjudged = resolve(entry(), {
+      frames: aircraftFrames({ flights: [asset] }),
+    });
+    assert.equal(unjudged.state, WATCH_PRESENCE.CHECKING);
+    assert.equal(unjudged.reason, 'class-unknown');
+    assert.equal(unjudged.fix, null);
+    assert.equal(unjudged.asset, null);
+    assert.equal(unjudged.matches, 1);
+    assertJsonSafe(unjudged);
+  }
+  // Once enrichment finds the type, the guard decides.
+  const bizjet = resolve(entry(), {
+    frames: aircraftFrames({
+      flights: [aircraft({ typeCode: 'GLF6', aircraftClass: 'bizjet' })],
+    }),
+  });
+  assert.equal(bizjet.state, WATCH_PRESENCE.DECLINED);
+  const airliner = resolve(entry(), {
+    frames: aircraftFrames({ flights: [aircraft({ typeCode: 'A320' })] }),
+  });
+  assert.equal(airliner.state, WATCH_PRESENCE.LIVE);
+  // Military aircraft and other kinds need no type code.
+  const military = resolve(entry(), {
+    frames: aircraftFrames({
+      military: [aircraft({ typeCode: null, military: true })],
+    }),
+  });
+  assert.equal(military.state, WATCH_PRESENCE.LIVE);
+  assert.equal(watchClassKnown(vessel()), true);
+  assert.equal(watchClassKnown(null), true);
+});
+
+test('a vessel without an AIS ship type is never followed', () => {
+  // Pleasure craft often send no static data: no type, code 0 ("not
+  // available") and the reserved codes name nothing the guard can judge.
+  for (const shipType of [null, '', '0', '100', '255']) {
+    const asset = vessel({ shipType });
+    assert.deepEqual(watchEligibility(asset), { ok: true }, `${shipType}`);
+    assert.equal(watchClassKnown(asset), false, `${shipType}`);
+    const unjudged = resolve(vesselEntry(), {
+      frames: framesOf(frame('ais-live-vessels', { assets: [asset] })),
+    });
+    assert.equal(unjudged.state, WATCH_PRESENCE.CHECKING);
+    assert.equal(unjudged.reason, 'class-unknown');
+    assert.equal(unjudged.fix, null);
+    assert.equal(unjudged.asset, null);
+    assertJsonSafe(unjudged);
+  }
+  // A known type lets the guard decide either way.
+  const cargo = resolve(vesselEntry(), {
+    frames: framesOf(
+      frame('ais-live-vessels', { assets: [vessel({ shipType: '71' })] }),
+    ),
+  });
+  assert.equal(cargo.state, WATCH_PRESENCE.LIVE);
+  const sailing = resolve(vesselEntry(), {
+    frames: framesOf(
+      frame('ais-live-vessels', { assets: [vessel({ shipType: '36' })] }),
+    ),
+  });
+  assert.equal(sailing.state, WATCH_PRESENCE.DECLINED);
 });
 
 // ------------------------------------------------------- presence: aircraft
@@ -868,10 +944,24 @@ test('satellites: computed, not in catalog, feed off, checking', () => {
   });
   assert.equal(clockFix.fix.atMs, T0);
   const missing = resolve(satelliteEntry(), {
-    satellite: { enabled: true, result: null },
+    satellite: { enabled: true, complete: true, result: null },
   });
   assert.equal(missing.state, WATCH_PRESENCE.NOT_IN_CATALOG);
   assert.equal(missing.reason, 'not-in-catalog');
+  // A partial, stale or still-loading catalog cannot prove absence.
+  for (const complete of [false, undefined]) {
+    const partial = resolve(satelliteEntry(), {
+      satellite: { enabled: true, ready: true, complete, result: null },
+    });
+    assert.equal(partial.state, WATCH_PRESENCE.CHECKING);
+    assert.equal(partial.reason, 'catalog-partial');
+  }
+  const unavailable = resolve(satelliteEntry(), {
+    satellite: { enabled: true, ready: false, unavailable: true, result: null },
+  });
+  assert.equal(unavailable.state, WATCH_PRESENCE.FEED_UNAVAILABLE);
+  assert.equal(unavailable.reason, 'feed-unavailable');
+  assert.equal(unavailable.layerId, 'satellites');
   for (const satellite of [null, undefined, { enabled: false, result }]) {
     const off = resolve(satelliteEntry(), { satellite });
     assert.equal(off.state, WATCH_PRESENCE.FEED_OFF);
@@ -1180,6 +1270,24 @@ test('an entry absent since the start is seen once confirmed absent', () => {
     events.map((event) => event.type),
     ['watch-seen'],
   );
+});
+
+test('a return after a gap with no evaluations is seen with a caveat', () => {
+  const tracker = createWatchTracker();
+  // Not reported for 90 s, then nothing evaluated for 25 min (a hidden
+  // tab), then live again: only 90 s of the absence was observed.
+  const { events, nowMs } = run(tracker, 'w-a', [
+    (atMs) => LIVE(atMs),
+    ...repeat(3, NOT_REPORTED),
+  ]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['watch-not-reported'],
+  );
+  const back = nowMs + 25 * MIN;
+  const event = keep(tracker.update('w-a', LIVE(back), { nowMs: back }));
+  assert.equal(event.type, WATCH_EVENT_TYPES.SEEN);
+  assert.deepEqual(event.caveats, ['coverage-incomplete']);
 });
 
 test('covered time follows the covered option, the epoch delta and the cap', () => {

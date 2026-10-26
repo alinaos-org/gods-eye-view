@@ -12,18 +12,21 @@
  * Rules:
  * - Fresh observations only: an observation counts when it is a fresh fix
  *   for its layer (`isFreshFix`, so a record carried through a missed poll
- *   never counts twice) and newer than the aircraft's latest applied fix
- *   from any layer (both layers stamp fixes with this browser's receipt
- *   time). An observation without a fix time can never be judged fresh and
- *   is ignored.
+ *   never counts twice) and a fresh fix against the aircraft's latest
+ *   applied fix from any layer: a later receipt time (both layers stamp
+ *   fixes with this browser's receipt time) and, when both carry one, a
+ *   later upstream contact time, so one upstream message received by both
+ *   layers counts once. An observation without a fix time can never be
+ *   judged fresh and is ignored.
  * - Start: a candidate opens on the first fresh observation of an emergency
  *   kind. A later fresh observation of the same kind confirms it once there
  *   are `confirmPolls` observations spanning `minSpanMs` to `maxGapMs`
- *   (20 s to 5 min) from the first; `sinceMs` is the first observation. A
- *   different kind, a span past `maxGapMs`, a fresh poll without the code or
- *   `maxGapMs` passing without confirmation abandon the candidate (counted
- *   as `transientIgnored`); a different kind or a late observation opens a
- *   new candidate at once.
+ *   (20 s to 5 min) from the first, measured between contact times when
+ *   both observations carry one, else between receipt times; `sinceMs` is
+ *   the first observation. A different kind, a span past `maxGapMs`, a
+ *   fresh poll without the code or `maxGapMs` passing without confirmation
+ *   abandon the candidate (counted as `transientIgnored`); a different kind
+ *   or a late observation opens a new candidate at once.
  * - Change: a confirmed track that reports another emergency kind on
  *   `confirmPolls` consecutive fresh polls changes kind.
  * - End: `clearPolls` consecutive fresh polls without an emergency code. A
@@ -319,9 +322,11 @@ export function createEmergencyTracker(policy) {
       squawk: null,
       source: null,
       firstSeenAtMs: null,
+      firstContactAtMs: null,
       confirmedAtMs: null,
       lastCodeAtMs: null,
       lastFixAtMs: null,
+      lastApplied: null,
       count: 0,
       clearCount: 0,
       change: null,
@@ -380,12 +385,14 @@ export function createEmergencyTracker(policy) {
     endTrack(track);
   }
 
-  function startCandidate(track, code, fixAtMs, layerId) {
+  function startCandidate(track, code, fix, layerId) {
+    const { fixAtMs } = fix;
     track.phase = EMERGENCY_PHASE.CANDIDATE;
     track.kind = code.kind;
     track.squawk = code.squawk;
     track.source = code.source;
     track.firstSeenAtMs = fixAtMs;
+    track.firstContactAtMs = fix.contactAtMs;
     track.confirmedAtMs = null;
     track.lastCodeAtMs = fixAtMs;
     track.count = 1;
@@ -446,11 +453,23 @@ export function createEmergencyTracker(policy) {
     track.layerId = layerId;
   }
 
+  /**
+   * How long after a candidate's first observation `fix` was broadcast:
+   * between contact times when both carry one (receipt order across two
+   * upstreams says little about message order), else between receipts.
+   */
+  function spanSinceFirst(track, fix) {
+    return track.firstContactAtMs !== null && fix.contactAtMs !== null
+      ? fix.contactAtMs - track.firstContactAtMs
+      : fix.fixAtMs - track.firstSeenAtMs;
+  }
+
   /** Applies one fresh, newest observation to a track. */
-  function apply(track, code, fixAtMs, layerId, out) {
+  function apply(track, code, fix, layerId, out) {
+    const { fixAtMs } = fix;
     if (track.phase === ENDED) {
       if (code.state === CODE.EMERGENCY) {
-        startCandidate(track, code, fixAtMs, layerId);
+        startCandidate(track, code, fix, layerId);
       }
       return;
     }
@@ -460,10 +479,10 @@ export function createEmergencyTracker(policy) {
         return;
       }
       if (code.state !== CODE.EMERGENCY) return;
-      const spanMs = fixAtMs - track.firstSeenAtMs;
+      const spanMs = spanSinceFirst(track, fix);
       if (code.kind !== track.kind || spanMs > limits.maxGapMs) {
         transientIgnored += 1;
-        startCandidate(track, code, fixAtMs, layerId);
+        startCandidate(track, code, fix, layerId);
         return;
       }
       track.count += 1;
@@ -597,11 +616,12 @@ export function createEmergencyTracker(policy) {
       if (isLive(track)) {
         track.layers.set(layerId, { seen: LAYER.FRESH, missed: 0 });
       }
-      if (track.lastFixAtMs !== null && !(fixAtMs > track.lastFixAtMs)) {
-        continue;
-      }
+      // Across layers too: a later receipt and, when both carry one, a
+      // later upstream contact (a lagging copy is not a new observation).
+      if (!isFreshFix(track.lastApplied, fix)) continue;
+      track.lastApplied = fix;
       takeFix(track, asset, fixAtMs, layerId);
-      apply(track, code, fixAtMs, layerId, out);
+      apply(track, code, fix, layerId, out);
     }
 
     const affected = [];

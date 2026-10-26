@@ -88,13 +88,15 @@
  *   `{radiusM}` (circles), `{aircraft: {militaryOnly}}`, `{fire:
  *   {minFrpMw}}`, `{quake: {minMagnitude}}` or `{quake: {bufferKm}}`.
  * - 'zone-rename' carries a name that `cleanName` accepts.
- * - 'zone-delete', 'watch-remove', 'inbox-clear' and 'storage-reset' are
- *   sent only after a confirming second click within
+ * - 'zone-delete', 'watch-remove', 'inbox-clear', 'storage-keep' and
+ *   'storage-reset' are sent only after a confirming second click within
  *   {@link WATCH_CONFIRM_MS}; the first click relabels the button.
  * - 'zone-brief-copy' carries the brief exactly as shown, one line each.
  * - 'layer-enable' names the layer whose off answer the card shows.
  * - 'storage-keep' (keep the loaded entries and save) and 'storage-reset'
- *   (reset the saved data) resolve `readError`.
+ *   (reset the saved data) resolve `readError`. Keep is offered only for a
+ *   'partial' read: for any other read error nothing was loaded, so saving
+ *   would only overwrite the stored data.
  * @module ui/watchPanel
  */
 import { formatNumber, t } from '../i18n/index.js';
@@ -109,6 +111,7 @@ import {
   cleanName,
   parseWatchInput,
 } from '../watch/document.js';
+import { SEVERITY_RANK } from '../watch/eventLog.js';
 import { createActionButton } from './actionButton.js';
 import { syncChipGroup } from './chipGroup.js';
 import { layerNameForId } from './layerNames.js';
@@ -137,6 +140,11 @@ import {
 
 /** How long an armed delete (or history clear) waits for its second click. */
 export const WATCH_CONFIRM_MS = 3000;
+/**
+ * A confirming click this soon after arming is ignored: a double-click
+ * lands twice on the relabelled button, and that is not a decision.
+ */
+export const WATCH_CONFIRM_MIN_MS = 500;
 /** Zone radius preselected for "Around the view" and aircraft selections. */
 export const WATCH_DEFAULT_RADIUS_KM = 25;
 /** Zone radius around a selected vessel, unless the person chose one. */
@@ -254,9 +262,12 @@ export function createWatchPanel({
   let inboxFilter = 'all';
   let selectedEntryId = null;
   let radiusKm = null;
-  /** {key, untilMs} of the armed destructive action, or null. */
+  /** {key, atMs, untilMs} of the armed destructive action, or null. */
   let armed = null;
-  /** An input to focus after the render that mounts it. */
+  /**
+   * A node to focus after the next render, or a function finding it once
+   * that render has mounted the cards.
+   */
   let focusAfterRender = null;
 
   const cards = createRailCards({
@@ -271,14 +282,34 @@ export function createWatchPanel({
     },
   });
 
-  /** Second-click confirmation: true when this click confirms `key`. */
+  /** Whether the latest key press is an auto-repeat of a held key. */
+  let keyRepeating = false;
+  lifetime.listen(container, 'keydown', (event) => {
+    keyRepeating = event.repeat === true;
+  });
+  // A key released outside the panel, or a pointer press, ends it too.
+  for (const type of ['keyup', 'pointerdown']) {
+    lifetime.listen(container, type, () => {
+      keyRepeating = false;
+    });
+  }
+
+  /**
+   * Second-click confirmation: true when this click confirms `key`. A
+   * click from a held key's auto-repeat, or one within
+   * {@link WATCH_CONFIRM_MIN_MS} of arming (a double-click), neither arms
+   * nor confirms.
+   */
   const confirmed = (key) => {
     const at = now();
-    if (armed && armed.key === key && at <= armed.untilMs) {
+    const sameArm = Boolean(armed && armed.key === key && at <= armed.untilMs);
+    if (keyRepeating) return false;
+    if (sameArm) {
+      if (at - armed.atMs < WATCH_CONFIRM_MIN_MS) return false;
       armed = null;
       return true;
     }
-    armed = { key, untilMs: at + WATCH_CONFIRM_MS };
+    armed = { key, atMs: at, untilMs: at + WATCH_CONFIRM_MS };
     timer(() => {
       if (armed?.key === key && now() >= armed.untilMs) {
         armed = null;
@@ -294,12 +325,47 @@ export function createWatchPanel({
   // Inline forms (the shared rail blocks have no text input)
   // -------------------------------------------------------------------------
 
+  /** The first node under `root`, depth first, that `predicate` accepts. */
+  function findNode(root, predicate) {
+    const stack = root ? [root] : [];
+    while (stack.length) {
+      const node = stack.pop();
+      if (predicate(node)) return node;
+      stack.push(...Array.from(node.children ?? []).reverse());
+    }
+    return null;
+  }
+  const cardNode = (cardId) =>
+    [...cardsHost.children].find((node) => node.dataset?.cardId === cardId) ??
+    null;
+  const actionNode = (cardId, actionId) =>
+    findNode(cardNode(cardId), (node) => node.dataset?.actionId === actionId);
+  /** Whether keyboard focus is on `root` or inside it. */
+  const holdsFocus = (root) => {
+    for (
+      let node = document.activeElement;
+      node;
+      node = node.parentNode ?? node.parent
+    ) {
+      if (node === root) return true;
+    }
+    return false;
+  };
+
+  /**
+   * An inline form. `opener` finds the action that opened it once rendered:
+   * closing a form that holds focus gives focus back to it, so it never
+   * falls to the page. `chipsLabel` names its chip group for assistive
+   * technology.
+   */
   function createInlineForm({
     labelText,
     inputLabel,
     submitLabel,
     maxLength,
     onSubmit,
+    opener = null,
+    chipsLabel = null,
   }) {
     const root = make('div', 'watch-inline-form');
     root.hidden = true;
@@ -307,6 +373,7 @@ export function createWatchPanel({
     set(label, 'textContent', labelText);
     const chips = make('div', 'rail-card-chips watch-inline-chips', root);
     chips.setAttribute('role', 'group');
+    if (chipsLabel) chips.setAttribute('aria-label', chipsLabel);
     chips.hidden = true;
     const input = make(
       'input',
@@ -356,6 +423,7 @@ export function createWatchPanel({
         focusAfterRender = input;
       },
       close() {
+        if (form.open && opener && holdsFocus(root)) focusAfterRender = opener;
         form.open = false;
         input.value = '';
         form.setError('');
@@ -401,6 +469,8 @@ export function createWatchPanel({
     inputLabel: t('Identifier to watch'),
     submitLabel: t('Add'),
     maxLength: 16,
+    opener: () => actionNode('watched', 'add-id'),
+    chipsLabel: t('Identifier type'),
     onSubmit: (value) => {
       const parsed = parseWatchInput({ match: idMatch, value });
       if (!parsed.ok) {
@@ -453,6 +523,7 @@ export function createWatchPanel({
         inputLabel: t('Zone name'),
         submitLabel: t('Save'),
         maxLength: WATCH_LIMITS.nameMaxChars,
+        opener: () => actionNode(`zone:${zoneId}`, 'rename'),
         onSubmit: (value) => {
           const name = cleanName(value, WATCH_LIMITS.nameMaxChars);
           if (!name) {
@@ -469,7 +540,10 @@ export function createWatchPanel({
     return form;
   };
 
-  lifetime.listen(keepButton, 'click', () => emit({ type: 'storage-keep' }));
+  lifetime.listen(keepButton, 'click', () => {
+    if (confirmed('storage-keep')) emit({ type: 'storage-keep' });
+    render();
+  });
   lifetime.listen(resetButton, 'click', () => {
     if (confirmed('storage-reset')) emit({ type: 'storage-reset' });
     render();
@@ -498,7 +572,12 @@ export function createWatchPanel({
       const time = formatWatchTime(row.atMs, { nowMs });
       return {
         id: row.id,
-        lead: row.read ? time : `● ${time}`,
+        // Unread as the log counts it: info rows never count, so they
+        // never show the marker that Mark all read clears.
+        lead:
+          !row.read && SEVERITY_RANK[row.severity] >= SEVERITY_RANK.notice
+            ? `● ${time}`
+            : time,
         text: describeWatchEvent(row, {
           zoneName: names.get(row.zoneId) ?? null,
           nowMs,
@@ -679,6 +758,16 @@ export function createWatchPanel({
       };
     });
     const notice = model.notices?.watch ?? null;
+    const selectedPresence = rows.find(
+      (row) => row.entryId === selectedEntryId,
+    )?.presence;
+    // Declined, or an aircraft the guard cannot judge yet: never located.
+    const unfollowed =
+      selectedPresence?.state === 'declined'
+        ? 'declined'
+        : selectedPresence?.reason === 'class-unknown'
+          ? 'class-unknown'
+          : null;
     const removing =
       selectedEntryId && isArmed(`watch-remove:${selectedEntryId}`);
     const blocks = [
@@ -711,7 +800,7 @@ export function createWatchPanel({
           {
             id: 'privacy',
             text: t(
-              'Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, and watched assets are never shared.',
+              'Identifiers only. Private light aircraft, gliders, business jets, pleasure and sailing craft are not watched, civil aircraft and vessels are followed only once their type is known, and watched assets are never shared.',
             ),
             muted: true,
           },
@@ -750,7 +839,9 @@ export function createWatchPanel({
           {
             id: 'focus',
             label: t('Focus'),
-            disabled: !selectedEntryId,
+            // A declined or unjudged entry is not followed, so never located.
+            hint: unfollowed ? describeWatchError(unfollowed) : '',
+            disabled: !selectedEntryId || unfollowed !== null,
             onClick: () =>
               emit({ type: 'watch-focus', entryId: selectedEntryId }),
           },
@@ -1015,6 +1106,7 @@ export function createWatchPanel({
                   muted: index === 0,
                 })),
                 clear: {
+                  label: t('Clear brief'),
                   onClick: () => emit({ type: 'zone-brief-clear', zoneId }),
                 },
               },
@@ -1063,6 +1155,14 @@ export function createWatchPanel({
               hint: deleting ? t('Click again within 3 s') : '',
               onClick: () => {
                 if (confirmed(`zone-delete:${zoneId}`)) {
+                  // The focused card goes away: focus the card after it.
+                  const ids = [...cardsHost.children].map(
+                    (node) => node.dataset?.cardId,
+                  );
+                  const index = ids.indexOf(`zone:${zoneId}`);
+                  const nextId =
+                    (index >= 0 ? ids[index + 1] : null) ?? 'add-zone';
+                  focusAfterRender = () => cardNode(nextId)?.children?.[0];
                   emit({ type: 'zone-delete', zoneId });
                 }
                 render();
@@ -1149,7 +1249,9 @@ export function createWatchPanel({
                     name: selection.label ?? selection.value,
                     radius: kmText(selectionRadius),
                   })
-                : t('Select an aircraft or vessel'),
+                : selection?.kind === 'aircraft' || selection?.kind === 'vessel'
+                  ? describeWatchError('no-position')
+                  : t('Select an aircraft or vessel'),
               disabled: full || !selection?.zoneable,
               onClick: () =>
                 emit({
@@ -1290,6 +1392,15 @@ export function createWatchPanel({
         'textContent',
         describeReadError(readError.code, readError.dropped),
       );
+      // Only a partial read loaded entries that Keep could save.
+      set(keepButton, 'hidden', readError.code !== 'partial');
+      set(
+        keepButton,
+        'textContent',
+        isArmed('storage-keep')
+          ? t('Confirm save')
+          : t('Keep loaded entries and save'),
+      );
       const resetting = isArmed('storage-reset');
       set(
         resetButton,
@@ -1350,8 +1461,12 @@ export function createWatchPanel({
     mountForm('watched', idForm);
     for (const card of zoneCards) if (card.form) mountForm(card.id, card.form);
     if (focusAfterRender) {
-      focusAfterRender.focus?.();
+      const target =
+        typeof focusAfterRender === 'function'
+          ? focusAfterRender()
+          : focusAfterRender;
       focusAfterRender = null;
+      target?.focus?.();
     }
   }
 
