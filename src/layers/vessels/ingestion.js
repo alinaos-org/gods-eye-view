@@ -50,7 +50,7 @@ export function createIngestion({
       if (!ownsAisRequest(requestController, requestSessionId)) return;
       setSourceLabel(snapshot.source);
       // Map observations into the existing display store; source fields stop here.
-      applyAisFeedSnapshot(viewer, {
+      const applied = applyAisFeedSnapshot(viewer, {
         rows: snapshot.records.map(vesselDisplayRow),
         observedAtMs: snapshot.observedAtMs,
         freshness: snapshot.freshness,
@@ -68,6 +68,13 @@ export function createIngestion({
         silentForMs: snapshot.silentForMs,
         reconnectAttempt: snapshot.reconnectAttempt,
       });
+      // The records now answer for this request's area. lastArea moved when
+      // it was asked for; a snapshot that was not reconciled leaves the
+      // records, and so this area, as they were.
+      if (applied?.reconciled) {
+        feed.appliedArea = area ? { ...area } : null;
+        feed.appliedAreaKnown = true;
+      }
     } catch (error) {
       if (
         ownsAisRequest(requestController, requestSessionId) &&
@@ -230,6 +237,10 @@ export function createVesselFeed() {
     abort: null,
     /** The area last asked for, null for every vessel. */
     lastArea: null,
+    /** The area of the last reconciled snapshot, null for every vessel. */
+    appliedArea: null,
+    /** Whether a snapshot was reconciled since the layer was last enabled. */
+    appliedAreaKnown: false,
     /** Stops listening for camera moves. */
     removeViewListener: null,
   };

@@ -85,9 +85,28 @@ test('flights analyst record: full record maps every contract field', () => {
     emergencySource: null,
     emergencyBroadcast: null,
     lastContactAtMs: null,
+    receivedAtMs: null,
     routeOrigin: 'AUS',
     routeDestination: 'LAX',
   });
+});
+
+test('flights analyst record: receivedAtMs is the poll receipt time, or null', () => {
+  const r = mapAnalystRecord('a1b2c3', {
+    ...FULL_INFO,
+    observedReceiptMs: 1_700_000_123_456,
+    lastContactEpochMs: 1_700_000_120_000,
+  });
+  assert.equal(r.receivedAtMs, 1_700_000_123_456);
+  // Receipt and the transponder's own contact time stay separate fields.
+  assert.equal(r.lastContactAtMs, 1_700_000_120_000);
+  for (const observedReceiptMs of [NaN, Infinity, '1700000000000', null]) {
+    assert.equal(
+      mapAnalystRecord('a1b2c3', { ...FULL_INFO, observedReceiptMs })
+        .receivedAtMs,
+      null,
+    );
+  }
 });
 
 test('flights analyst record: implausible route is suppressed (routeOk=false)', () => {

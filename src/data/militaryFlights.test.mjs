@@ -77,9 +77,27 @@ test('military analyst record: full record maps every contract field', () => {
     emergencySource: null,
     emergencyBroadcast: null,
     lastContactAtMs: null,
+    receivedAtMs: null,
     routeOrigin: null,
     routeDestination: null,
   });
+});
+
+test('military analyst record: receivedAtMs is the poll receipt time, or null', () => {
+  assert.equal(
+    mapAnalystRecord('ae01ce', {
+      ...FULL_INFO,
+      observedReceiptMs: 1_700_000_123_456,
+    }).receivedAtMs,
+    1_700_000_123_456,
+  );
+  for (const observedReceiptMs of [NaN, -Infinity, '1700000000000', null]) {
+    assert.equal(
+      mapAnalystRecord('ae01ce', { ...FULL_INFO, observedReceiptMs })
+        .receivedAtMs,
+      null,
+    );
+  }
 });
 
 test('military analyst record: military is ALWAYS true, routes/country always null', () => {

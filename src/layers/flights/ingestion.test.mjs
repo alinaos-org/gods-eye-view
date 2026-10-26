@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIngestion } from './ingestion.js';
+import { createIngestion, createFlightFeed } from './ingestion.js';
 
 function setup(source) {
   const feed = {
@@ -82,4 +82,139 @@ test('civil acquisition publishes source time and uses a replaced source on the 
   assert.equal(probe.feed._lastError, 'Source snapshot time unavailable');
   assert.deepEqual(probe.labels, ['First', 'Second']);
   assert.equal(probe.restores.length, 2);
+});
+
+function anchorSetup() {
+  let respond = async () => ({ records: [], observedAtMs: 1 });
+  let applyThrows = false;
+  let query = { latitude: 30.25, longitude: -97.75 };
+  const feed = createFlightFeed({
+    label: 'Fixture',
+    getSnapshot: (asked, options) => respond(asked, options),
+  });
+  const { methods } = createIngestion({
+    feed,
+    getQuery: () => query,
+    applySnapshot: () => {
+      if (applyThrows) throw new Error('render failed');
+      return { count: 1, ids: new Set(['abc123']) };
+    },
+    setSourceLabel: () => {},
+    applyPendingTrackingRestore: () => {},
+  });
+  return {
+    feed,
+    update: methods.update,
+    respondWith: (fn) => {
+      respond = fn;
+    },
+    moveTo: (next) => {
+      query = next;
+    },
+    failApply: (value) => {
+      applyThrows = value;
+    },
+  };
+}
+
+const regional = (extra = {}) => ({
+  records: [],
+  source: 'adsb.lol',
+  coverage: '250nm regional fallback',
+  observedAtMs: 1000,
+  freshness: 'fresh',
+  ...extra,
+});
+
+test('a new flight feed has no coverage anchor until a snapshot is accepted', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const probe = anchorSetup();
+  assert.equal(probe.feed._lastCoverageQuery, null);
+  probe.respondWith(async () => {
+    throw new Error('offline');
+  });
+  await probe.update(null);
+  assert.equal(probe.feed._lastCoverageQuery, null);
+  assert.equal(probe.feed._lastError, 'Live data unavailable');
+});
+
+test('the coverage anchor is recorded only on accept and kept on every failure', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const probe = anchorSetup();
+  const asked = [];
+  probe.respondWith(async (query) => {
+    asked.push(query);
+    return regional();
+  });
+  await probe.update(null);
+  assert.deepEqual(probe.feed._lastCoverageQuery, {
+    latitude: 30.25,
+    longitude: -97.75,
+  });
+  // A copy: later changes to the query object cannot move the anchor.
+  assert.notEqual(probe.feed._lastCoverageQuery, asked[0]);
+  asked[0].latitude = 0;
+  assert.equal(probe.feed._lastCoverageQuery.latitude, 30.25);
+
+  // A failed request from a new view keeps the anchor of the records in memory.
+  probe.moveTo({ latitude: 51.5, longitude: -0.12 });
+  probe.respondWith(async (query) => {
+    asked.push(query);
+    const error = new Error('rate limited');
+    error.retryAfterMs = 60_000;
+    throw error;
+  });
+  await probe.update(null);
+  assert.equal(asked.at(-1).latitude, 51.5);
+  assert.equal(probe.feed._lastCoverageQuery.latitude, 30.25);
+
+  // Backoff returns before asking at all.
+  const calls = asked.length;
+  await probe.update(null);
+  assert.equal(asked.length, calls);
+  assert.equal(probe.feed._backoff, true);
+  assert.equal(probe.feed._lastCoverageQuery.latitude, 30.25);
+
+  // A cancelled request keeps it too.
+  probe.feed._retryAt = 0;
+  probe.respondWith(
+    (_query, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason));
+      }),
+  );
+  const pending = probe.update(null);
+  for (const controller of probe.feed._activeUpdateControllers)
+    controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(probe.feed._lastCoverageQuery.latitude, 30.25);
+
+  // A snapshot the renderer did not accept is not an accepted snapshot.
+  probe.failApply(true);
+  probe.respondWith(async () => regional());
+  await probe.update(null);
+  assert.equal(probe.feed._lastCoverageQuery.latitude, 30.25);
+
+  // The next accepted snapshot moves the anchor to its own query.
+  probe.failApply(false);
+  probe.feed._retryAt = 0;
+  await probe.update(null);
+  assert.deepEqual(probe.feed._lastCoverageQuery, {
+    latitude: 51.5,
+    longitude: -0.12,
+  });
+});
+
+test('a stale accepted snapshot still records the anchor it answered', async () => {
+  const probe = anchorSetup();
+  probe.moveTo({ latitude: -33.9, longitude: 151.2 });
+  probe.respondWith(async () =>
+    regional({ stale: true, ageMs: 600_000, freshness: 'stale' }),
+  );
+  await probe.update(null);
+  assert.equal(probe.feed._backoff, true);
+  assert.deepEqual(probe.feed._lastCoverageQuery, {
+    latitude: -33.9,
+    longitude: 151.2,
+  });
 });

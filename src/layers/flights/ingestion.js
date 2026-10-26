@@ -35,7 +35,8 @@ export function createIngestion({
         : resourceController.signal;
       try {
         updateSignal.throwIfAborted();
-        const snapshot = await feed._source.getSnapshot(getQuery(viewer), {
+        const query = getQuery(viewer);
+        const snapshot = await feed._source.getSnapshot(query, {
           signal: updateSignal,
         });
         updateSignal.throwIfAborted();
@@ -55,6 +56,10 @@ export function createIngestion({
         feed._lastCoverage = snapshot.coverage;
         setSourceLabel(feed._lastSource);
         const accepted = applySnapshot(snapshot, viewer);
+        // The view anchor this accepted snapshot answered. A regional fallback
+        // covers a disc around it, so coverage must read the anchor of the
+        // records in memory, not of a request that failed or is still out.
+        feed._lastCoverageQuery = query ? { ...query } : null;
         feed._count = accepted.count;
         // Freshness belongs to the source snapshot, not the moment this browser
         // received a cached 200 response.
@@ -107,6 +112,8 @@ export function createFlightFeed(source) {
   feed._lastStatus = null;
   feed._lastSource = source?.label || 'Aircraft';
   feed._lastCoverage = 'worldwide upstream snapshot';
+  // The query (view anchor) of the last accepted snapshot; null until one is.
+  feed._lastCoverageQuery = null;
   feed._trackingRefreshEpoch = 0;
   feed._lastTrackingRefreshOutcome = {
     epoch: 0,

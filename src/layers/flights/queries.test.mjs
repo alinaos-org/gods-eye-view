@@ -147,3 +147,78 @@ test('tracked ownership and live anchors remain independent of fleet models', ()
   f.parts.tracking._trackedModelRegimeActive = () => false;
   assert.equal(f.parts.rendering._modelOwnsVisual('abc123', null), false);
 });
+
+test('flights coverage is global for the worldwide snapshot and unqualified text', () => {
+  const f = fixture();
+  for (const coverage of [
+    'worldwide upstream snapshot',
+    'worldwide',
+    'military upstream snapshot',
+    '  Worldwide OpenSky states  ',
+  ]) {
+    f.flightState.feed._lastCoverage = coverage;
+    // An anchor never narrows a worldwide answer.
+    f.flightState.feed._lastCoverageQuery = { latitude: 30, longitude: -97 };
+    assert.deepEqual(f.queries.getCoverageArea(), { kind: 'global' }, coverage);
+  }
+});
+
+test('a regional fallback is a disc around the accepted anchor, 438 km for 250 nm', () => {
+  const f = fixture();
+  f.flightState.feed._lastCoverage = '250nm regional fallback';
+  f.flightState.feed._lastCoverageQuery = {
+    latitude: 30.2672,
+    longitude: -97.7431,
+  };
+  const area = f.queries.getCoverageArea();
+  assert.deepEqual(area, {
+    kind: 'circle',
+    lat: 30.2672,
+    lon: -97.7431,
+    radiusKm: 438,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(area)), area);
+  // A fresh object each call, so a caller cannot edit the layer's answer.
+  assert.notEqual(f.queries.getCoverageArea(), area);
+  area.radiusKm = 1;
+  assert.equal(f.queries.getCoverageArea().radiusKm, 438);
+  for (const [coverage, radiusKm] of [
+    ['250 nm regional', 438],
+    ['100 NM fallback', 160.2],
+  ]) {
+    f.flightState.feed._lastCoverage = coverage;
+    assert.equal(f.queries.getCoverageArea().radiusKm, radiusKm, coverage);
+  }
+});
+
+test('flights coverage is unknown without text, anchor, distance or a usable disc', () => {
+  const f = fixture();
+  const cases = [
+    [undefined, { latitude: 30, longitude: -97 }],
+    ['', { latitude: 30, longitude: -97 }],
+    ['   ', { latitude: 30, longitude: -97 }],
+    [null, { latitude: 30, longitude: -97 }],
+    ['250nm regional fallback', null],
+    ['250nm regional fallback', undefined],
+    ['250nm regional fallback', {}],
+    ['250nm regional fallback', { latitude: 30 }],
+    ['250nm regional fallback', { latitude: NaN, longitude: -97 }],
+    ['250nm regional fallback', { latitude: 91, longitude: -97 }],
+    ['250nm regional fallback', { latitude: 30, longitude: 181 }],
+    ['250nm regional fallback', { latitude: '30', longitude: '-97' }],
+    ['regional fallback', { latitude: 30, longitude: -97 }],
+    ['250 km regional fallback', { latitude: 30, longitude: -97 }],
+    ['250nmi regional fallback', { latitude: 30, longitude: -97 }],
+    // 10 nm is 18.5 km, less than the anchor margin: no honest disc is left.
+    ['10nm regional fallback', { latitude: 30, longitude: -97 }],
+  ];
+  for (const [coverage, anchor] of cases) {
+    f.flightState.feed._lastCoverage = coverage;
+    f.flightState.feed._lastCoverageQuery = anchor;
+    assert.deepEqual(
+      f.queries.getCoverageArea(),
+      { kind: 'unknown' },
+      JSON.stringify([coverage, anchor]),
+    );
+  }
+});

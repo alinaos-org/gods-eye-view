@@ -171,7 +171,8 @@ export function createQueries({
    *   military: boolean, aircraftClass: string|null, originCountry: null,
    *   operator: string|null, squawk: string|null, emergency: boolean,
    *   emergencyKind: string|null, emergencySource: 'squawk'|'ads-b'|null,
-   *   emergencyBroadcast: string|null, lastContactAtMs: number|null, routeOrigin: null, routeDestination: null}}
+   *   emergencyBroadcast: string|null, lastContactAtMs: number|null,
+   *   receivedAtMs: number|null, routeOrigin: null, routeDestination: null}}
    */
 
   function mapAnalystRecord(icao24, info) {
@@ -216,6 +217,10 @@ export function createQueries({
       // Latest known general aircraft-message contact, retained if a poll
       // has no time. This is not the receipt time of the current status.
       lastContactAtMs: num(info?.lastContactEpochMs),
+      // When this browser last received a poll row for the aircraft. A record
+      // carried through a missed poll keeps its old receipt (and its squawk),
+      // so a repeat is never mistaken for a new observation.
+      receivedAtMs: num(info?.observedReceiptMs),
       routeOrigin: null,
       routeDestination: null,
     };

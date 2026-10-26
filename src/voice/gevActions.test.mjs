@@ -3931,3 +3931,100 @@ test('analyst-only lookup distinguishes duplicate names and uses canonical aircr
   assert.equal(plane.ok, true);
   assert.equal(plane.latitude, 36, 'canonical ID resolves the current position, not old coordinates');
 });
+
+test('analyst_query items never carry the watch timing fields receivedAtMs or positionAtMs', async () => {
+  globalThis.window = globalThis.window || {
+    clearTimeout,
+    setTimeout,
+    requestIdleCallback: null,
+  };
+  const now = Date.now();
+  // Records from the real layer mappers, so the fields are really present.
+  const { mapAnalystRecord: mapFlight } = await import('../data/flights.js');
+  const { mapAnalystRecord: mapMilitary } =
+    await import('../data/militaryFlights.js');
+  const { mapAnalystRecord: mapVessel } =
+    await import('../data/aisLiveVessels.js');
+  const records = {
+    flights: [
+      mapFlight('a1b2c3', {
+        callsign: 'SWA696',
+        rawLat: 30.27,
+        rawLon: -97.74,
+        altitude: 11000,
+        observedReceiptMs: now - 5_000,
+        lastContactEpochMs: now - 6_000,
+      }),
+    ],
+    military: [
+      mapMilitary('ae01ce', {
+        callsign: 'RCH451',
+        rawLat: 31.05,
+        rawLon: -97.03,
+        altitudeFt: 28000,
+        observedReceiptMs: now - 4_000,
+      }),
+    ],
+    'ais-live-vessels': [
+      mapVessel({
+        mmsi: '353136000',
+        name: 'EVER GIVEN',
+        lat: 29.55,
+        lon: -94.98,
+        speed: 12.3,
+        lastPositionEpoch: Math.floor((now - 30_000) / 1000),
+      }),
+    ],
+  };
+  assert.equal(records.flights[0].receivedAtMs, now - 5_000);
+  assert.equal(records.military[0].receivedAtMs, now - 4_000);
+  assert.ok(records['ais-live-vessels'][0].positionAtMs > 0);
+  const modules = Object.fromEntries(
+    Object.entries(records).map(([id, rows]) => [
+      id,
+      {
+        getStats: () => ({ count: rows.length, lastUpdate: now }),
+        getAnalystRecords: () => rows,
+      },
+    ]),
+  );
+  const { runner } = manifestRunner(modules);
+  const assertClean = (result, label) => {
+    assert.equal(result.ok, true, label);
+    assert.ok(result.items.length > 0, label);
+    for (const item of result.items) {
+      assert.equal('receivedAtMs' in item, false, `${label}: ${item.id}`);
+      assert.equal('positionAtMs' in item, false, `${label}: ${item.id}`);
+      assert.doesNotMatch(
+        JSON.stringify(item),
+        /receivedAtMs|positionAtMs/,
+        `${label}: ${item.id}`,
+      );
+    }
+  };
+  for (const layer of Object.keys(records)) {
+    assertClean(
+      await runner('analyst_query', {
+        layers: [layer],
+        scope: { kind: 'anywhere' },
+      }),
+      layer,
+    );
+  }
+  const all = await runner('analyst_query', {
+    layers: Object.keys(records),
+    scope: { kind: 'anywhere' },
+    limit: 10,
+  });
+  assertClean(all, 'all layers');
+  assert.equal(all.items.length, 3);
+  // The aircraft contact time is a manifest field and still rides along.
+  assert.equal(
+    all.items.find((item) => item.icao24 === 'a1b2c3').lastContactAtMs,
+    now - 6_000,
+  );
+  assertClean(
+    await runner('analyst_query', { followUp: true, limit: 10 }),
+    'follow-up',
+  );
+});

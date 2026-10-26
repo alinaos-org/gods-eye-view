@@ -405,3 +405,86 @@ test('empty coverage cannot hide stale, incomplete or rejected source data', asy
     assert.ok(layer.getStats().error, JSON.stringify(patch));
   }
 });
+
+test('vessel coverage is the reconciled area and is cleared after disable and destroy', async (t) => {
+  const originalDocument = globalThis.document;
+  globalThis.document = { getElementById: () => null };
+  t.after(() => {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  });
+  t.mock.method(console, 'warn', noop);
+  const asked = [];
+  let fail = false;
+  const { layer } = setup({
+    async getSnapshot(query) {
+      asked.push(query);
+      if (fail) throw new Error('Vessels unavailable');
+      return snapshot([observation('111')]);
+    },
+  });
+  const rad = Math.PI / 180;
+  const camera = {
+    positionCartographic: {
+      latitude: 51.93 * rad,
+      longitude: 4.05 * rad,
+      height: 40_000,
+    },
+    // The pose the vessel renderer reads on every reconcile.
+    positionWC: { x: 0, y: 0, z: 0 },
+    heading: 0,
+    pitch: 0,
+    roll: 0,
+  };
+  const prime = (viewer) =>
+    layer.testing._setVesselStateForTest({
+      viewer,
+      billboardCollection: { add: (options) => ({ ...options }), remove: noop },
+    });
+  const assertCircle = (area, lat, lon, radiusKm) => {
+    assert.equal(area.kind, 'circle');
+    assert.ok(Math.abs(area.lat - lat) < 1e-9, `lat ${area.lat}`);
+    assert.ok(Math.abs(area.lon - lon) < 1e-9, `lon ${area.lon}`);
+    assert.equal(area.radiusKm, radiusKm);
+    assert.deepEqual(Object.keys(area).sort(), [
+      'kind',
+      'lat',
+      'lon',
+      'radiusKm',
+    ]);
+  };
+
+  prime({ camera });
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
+  await layer.update();
+  assert.equal(layer.getStats().error, null);
+  assert.equal(asked.at(-1).area.radiusKm, 40);
+  assertCircle(layer.getCoverageArea(), 51.93, 4.05, 40);
+
+  // A failed request for a new view leaves the records, and their area.
+  camera.positionCartographic = {
+    latitude: 1.26 * rad,
+    longitude: 103.8 * rad,
+    height: 60_000,
+  };
+  fail = true;
+  await layer.update();
+  assert.equal(layer.getStats().error, 'Vessels unavailable');
+  assert.ok(Math.abs(asked.at(-1).area.lat - 1.26) < 1e-9);
+  assertCircle(layer.getCoverageArea(), 51.93, 4.05, 40);
+  fail = false;
+
+  layer.disable();
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
+
+  // A wide view (no area) answers for every vessel.
+  prime({});
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
+  await layer.update();
+  assert.equal(layer.getStats().error, null);
+  assert.equal('area' in asked.at(-1), false);
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'global' });
+
+  layer.destroy();
+  assert.deepEqual(layer.getCoverageArea(), { kind: 'unknown' });
+});

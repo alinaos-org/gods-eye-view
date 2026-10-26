@@ -17,6 +17,50 @@ import {
 } from './policy.js';
 import { emergencyBroadcastPhrase } from '../../data/aircraftEmergency.js';
 
+/** The coverage text of the worldwide OpenSky snapshot (sources/live). */
+const WORLDWIDE_FLIGHT_COVERAGE = 'worldwide upstream snapshot';
+/** Kilometres in one nautical mile. */
+const KM_PER_NM = 1.852;
+/**
+ * Kilometres taken off a regional fallback disc. The server snaps the view
+ * anchor to a 0.25° grid (server/providers/aircraft/opensky.js), so the disc
+ * it served can sit up to about 20 km from the anchor this browser sent.
+ */
+const FALLBACK_ANCHOR_MARGIN_KM = 25;
+
+/**
+ * The ground a flights snapshot covers, read from its coverage text and the
+ * view anchor it answered. Worldwide or unqualified text is global; an
+ * "N nm" regional fallback with a usable anchor is a disc shrunk by
+ * {@link FALLBACK_ANCHOR_MARGIN_KM}; anything else is unknown.
+ * @param {unknown} coverage - Coverage text of the last accepted snapshot.
+ * @param {{latitude?: number, longitude?: number}|null|undefined} anchor -
+ *   Query of the last accepted snapshot.
+ * @returns {{kind: 'global'}|{kind: 'circle', lat: number, lon: number,
+ *   radiusKm: number}|{kind: 'unknown'}}
+ */
+function flightCoverageArea(coverage, anchor) {
+  const text = typeof coverage === 'string' ? coverage.trim() : '';
+  if (!text) return { kind: 'unknown' };
+  if (text === WORLDWIDE_FLIGHT_COVERAGE || !/fallback|regional/i.test(text))
+    return { kind: 'global' };
+  const nm = Number(/(\d+)\s*nm\b/i.exec(text)?.[1]);
+  const radiusKm =
+    Math.round((nm * KM_PER_NM - FALLBACK_ANCHOR_MARGIN_KM) * 1000) / 1000;
+  const lat = anchor?.latitude;
+  const lon = anchor?.longitude;
+  if (
+    Number.isFinite(radiusKm) &&
+    radiusKm > 0 &&
+    Number.isFinite(lat) &&
+    Math.abs(lat) <= 90 &&
+    Number.isFinite(lon) &&
+    Math.abs(lon) <= 180
+  )
+    return { kind: 'circle', lat, lon, radiusKm };
+  return { kind: 'unknown' };
+}
+
 export function createQueries({
   flightState,
   services,
@@ -235,7 +279,8 @@ export function createQueries({
    *   military: boolean, aircraftClass: string|null, originCountry: string|null,
    *   operator: string|null, squawk: string|null, emergency: boolean,
    *   emergencyKind: string|null, emergencySource: 'squawk'|'ads-b'|null,
-   *   emergencyBroadcast: string|null, lastContactAtMs: number|null, routeOrigin: string|null,
+   *   emergencyBroadcast: string|null, lastContactAtMs: number|null,
+   *   receivedAtMs: number|null, routeOrigin: string|null,
    *   routeDestination: string|null}}
    */
 
@@ -284,6 +329,10 @@ export function createQueries({
       // Latest known general aircraft-message contact, retained if a poll
       // has no time. This is not the receipt time of the current status.
       lastContactAtMs: num(info?.lastContactEpochMs),
+      // When this browser last received a poll row for the aircraft. A record
+      // carried through a missed poll keeps its old receipt (and its squawk),
+      // so a repeat is never mistaken for a new observation.
+      receivedAtMs: num(info?.observedReceiptMs),
       routeOrigin: routeOk ? text(info?.route?.origin?.code) : null,
       routeDestination: routeOk ? text(info?.route?.destination?.code) : null,
     };
@@ -977,6 +1026,21 @@ export function createQueries({
         source: flightState.feed._lastSource,
         coverage: flightState.feed._lastCoverage,
       };
+    },
+
+    /**
+     * The ground the records in memory cover, for watch zones. The worldwide
+     * snapshot is global; a regional fallback is a disc around the view
+     * anchor of the accepted snapshot (250 nm gives 438 km); anything else
+     * is unknown. Plain JSON, a fresh object on every call.
+     * @returns {{kind: 'global'}|{kind: 'circle', lat: number, lon: number,
+     *   radiusKm: number}|{kind: 'unknown'}}
+     */
+    getCoverageArea() {
+      return flightCoverageArea(
+        flightState.feed._lastCoverage,
+        flightState.feed._lastCoverageQuery,
+      );
     },
   };
 

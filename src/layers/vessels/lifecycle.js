@@ -108,6 +108,7 @@ export function createLifecycle({
     state.feed.lastMessageAt = null;
     state.feed.rawRowCount = 0;
     state.feed.acceptedRowCount = 0;
+    clearAppliedArea();
     state.feed.sessionId = ++vesselState._aisSessionSequence;
     state.feed.firstConnectPhase = 'idle';
     state.feed.firstConnectStartedAt = null;
@@ -220,6 +221,9 @@ export function createLifecycle({
       }
       state.feed.loading = false;
       state.feed.loadingLabel = '';
+      // The kept records describe an area nobody is refreshing; coverage is
+      // unknown again until a snapshot is reconciled after the next enable.
+      clearAppliedArea();
     },
 
     destroy(viewer) {
@@ -246,6 +250,12 @@ export function createLifecycle({
       resetState();
     },
   };
+
+  /** Forget the area of the last reconciled snapshot (coverage: unknown). */
+  function clearAppliedArea() {
+    state.feed.appliedArea = null;
+    state.feed.appliedAreaKnown = false;
+  }
 
   function removeViewListener() {
     const remove = state.feed.removeViewListener;

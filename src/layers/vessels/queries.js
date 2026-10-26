@@ -173,7 +173,7 @@ export function createQueries({
    * @returns {{id: string|null, mmsi: string|null, name: string|null,
    *   lat: number|null, lon: number|null, speedKts: number|null,
    *   courseDeg: number|null, shipType: string|null, destination: string|null,
-   *   navStatus: null}}
+   *   navStatus: null, positionAtMs: number|null}}
    */
 
   function mapAnalystRecord(record) {
@@ -184,6 +184,7 @@ export function createQueries({
     };
     const mmsi = text(record?.mmsi);
     const name = text(record?.name);
+    const positionEpochS = record?.lastPositionEpoch;
     return {
       id: name || mmsi,
       mmsi,
@@ -195,6 +196,12 @@ export function createQueries({
       shipType: text(record?.type),
       destination: text(record?.destination),
       navStatus: null,
+      // When the AIS position was reported (source time, ms), not when this
+      // browser received it; null when the source gave no time.
+      positionAtMs:
+        Number.isFinite(positionEpochS) && positionEpochS > 0
+          ? Math.round(positionEpochS * 1000)
+          : null,
     };
   }
 
@@ -549,6 +556,32 @@ export function createQueries({
         // the user to guess whether anything is still happening.
         retryInSec: aisRetryInSec(),
       };
+    },
+
+    /**
+     * The ground the records in memory cover, for watch zones: the area of
+     * the last reconciled snapshot, not the area last asked for (which moves
+     * before a request resolves and stays moved when it fails). Unknown until
+     * a snapshot is reconciled, global after a wide view asked for every
+     * vessel. Plain JSON, a fresh object on every call.
+     * @returns {{kind: 'global'}|{kind: 'circle', lat: number, lon: number,
+     *   radiusKm: number}|{kind: 'unknown'}}
+     */
+    getCoverageArea() {
+      if (!state.feed.appliedAreaKnown) return { kind: 'unknown' };
+      const area = state.feed.appliedArea;
+      if (!area) return { kind: 'global' };
+      const { lat, lon, radiusKm } = area;
+      if (
+        Number.isFinite(lat) &&
+        Math.abs(lat) <= 90 &&
+        Number.isFinite(lon) &&
+        Math.abs(lon) <= 180 &&
+        Number.isFinite(radiusKm) &&
+        radiusKm > 0
+      )
+        return { kind: 'circle', lat, lon, radiusKm };
+      return { kind: 'unknown' };
     },
   };
 
