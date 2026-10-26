@@ -31,6 +31,7 @@ const COCKPIT_ENTRY_COLLAPSE_PANEL_IDS = Object.freeze([
   'street-level-panel',
   'scene-panel',
   'pp-toggles',
+  'watch-panel',
   'global-context-panel',
   'radio-panel',
 ]);
@@ -312,6 +313,7 @@ export class PanelChrome {
       'weather-panel',
       'recent-imagery-panel',
       'street-level-panel',
+      'watch-panel',
       'global-context-panel',
     ].includes(panelEl?.id);
     const collapsed = panelEl.classList.contains('collapsed');

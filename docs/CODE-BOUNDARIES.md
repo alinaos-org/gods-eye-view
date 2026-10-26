@@ -33,6 +33,7 @@ export inventory. Use declared exports rather than reaching into internal files.
 | `src/layers/<family>/` | Source acquisition, records and Cesium resources with explicit controller/renderer owners               |
 | `src/sources/`         | Portable protocols and source contracts; request state belongs to each factory instance                 |
 | `src/services/`        | Supplied application operations; scene construction owns caches and cancellation                        |
+| `src/watch/`           | Portable Watch engine: zones, watched assets, events and briefs; clocks and storage are injected        |
 | `src/voice/`           | Portable action schemas/session, common controls, action execution and separate protocol adapters       |
 | `server/providers/`    | Node route factories, process-scoped provider caches and shutdown cleanup                               |
 | `server/standalone/`   | Environment, local settings writes and server composition                                               |
@@ -59,11 +60,13 @@ See [application construction](APPLICATION.md) and the
 Portable source graphs cannot reach application/rendering, Node, Cesium or
 browser globals. This includes `sources/*`, dedicated `layers/*/source` exports,
 flight/military/vessel record and ingestion exports, action schemas, the session
-interface, lifecycle and feed state. The browser-global rule reserves platform
-names such as `document` and `window` in these modules; it is an architectural
-check, not a JavaScript sandbox. Common voice controls cannot depend on a
-Realtime protocol implementation. Negative fixtures cover indirect helpers,
-self-package imports, symlinks and unreachable files.
+interface, lifecycle, feed state and every `src/watch/*.js` module (the Watch
+engine; `src/app/watch.js` supplies its clocks, storage and wording). The
+browser-global rule reserves platform names such as `document` and `window` in
+these modules; it is an architectural check, not a JavaScript sandbox. Common
+voice controls cannot depend on a Realtime protocol implementation. Negative
+fixtures cover indirect helpers, self-package imports, symlinks, unreachable
+files and Watch modules that reach Cesium, storage or the panel.
 
 Source-only factories use dedicated `layers/<family>/source` exports where
 available, preserving the same factory implementation without loading rendering.

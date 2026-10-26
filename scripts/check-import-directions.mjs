@@ -182,6 +182,9 @@ export function checkImportDirections(root) {
       roots.set(value.replace(/^\.\//, ''), key);
   }
   roots.set('src/data/feedState.js', 'feed state');
+  // The Watch engine is pure: clocks, storage and wording are injected.
+  for (const file of files.filter((f) => /^src\/watch\/[^/]+\.js$/.test(f)))
+    roots.set(file, 'watch engine');
   for (const [start, label] of roots) {
     if (!existsSync(path.join(root, start))) {
       report(start, `Missing portable entry: ${label}`);

@@ -2,6 +2,7 @@
   "es": [
     "1090 MHz",
     "978 MHz UAT",
+    "ADS-B: {emergency}",
     "AIS: --",
     "AIS: {name}",
     "ANIME",
@@ -52,6 +53,7 @@
     "MIL",
     "MINI",
     "MM",
+    "MMSI",
     "MONITOR",
     "MSG/S",
     "Metal",
@@ -114,6 +116,7 @@
     "voice|ERROR",
     "{rate} msg/s",
     "{speed} kn",
+    "{time} UTC",
     "{type}  SPD: {speed}  HDG: {heading}",
     "{value} KM",
     "{value} KM/H",
@@ -123,6 +126,7 @@
     "▲ {frp} MW"
   ],
   "ru": [
+    "ADS-B: {emergency}",
     "AIS: --",
     "AIS: {name}",
     "CCTV",
@@ -131,12 +135,14 @@
     "GEO",
     "Ironbow",
     "Landsat 8/9",
+    "MMSI",
     "NAV",
     "NVG",
     "R&B",
     "REC",
     "VS",
-    "WHOT/BHOT"
+    "WHOT/BHOT",
+    "{time} UTC"
   ],
   "zh-CN": [
     "1090 MHz",
@@ -162,6 +168,7 @@
     "KTS",
     "Landsat 8/9",
     "MM",
+    "MMSI",
     "NVG",
     "REC",
     "SRC {value}",
@@ -186,6 +193,7 @@
     "{rate} msg/s",
     "{source} HTTP {status}",
     "{speed} kn",
+    "{time} UTC",
     "{type}  SPD: {speed}  HDG: {heading}",
     "{value} KM",
     "{value} KM/S",

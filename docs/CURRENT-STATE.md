@@ -103,6 +103,162 @@ provider registration rejects compositions that cannot fit rather than truncatin
 identities. A malformed or duplicate entry invalidates the complete custom-switch
 field. Existing whole-link size limits still apply.
 
+## Watch zones and watched assets — October 2026
+
+DISPLAY ▸ Watch (the `visibility` toggle between Import and Celestial) opens
+the Watch panel in the right rail, above Context. A zone is a circle around the
+view or the selected aircraft or vessel (5, 25, 100, 250 or 500 km; any radius
+from 1 to 1,000 km is valid), or a shape made with Draw (an area, or a pin that
+becomes a 10 km circle). New zones watch aircraft and vessels; fires and
+earthquakes can be added per zone. Each zone card shows one answer per kind, up
+to three longest-present occupants, its settings (kinds, notify, radius,
+military only, minimum fire radiative power, minimum magnitude, quake buffer)
+and a place brief that can be copied as text. Watched assets are aircraft,
+vessels and satellites followed by identifier. The inbox shows the newest 50
+events of the session, with an Alerts filter. Active emergencies lists every
+emergency the two aircraft layers confirm, wherever it is. Zone outlines are
+one ground polyline coloured by state, with display-only overlay labels (at
+most 24). Alert events can raise a pop-up, at most one every 15 s, while
+Settings ▸ Alert pop-ups is on. The panel stays hidden until it is opened or
+the saved document holds a zone or a watched asset, and never expands itself on
+restore. While Watch is unused nothing is read from any layer. In use, it reads
+only the layers its zones and entries need, plus Live Flights and Military
+Flights for the emergencies card: once per refresh, on an idle callback, with a
+30 s tick for expiry, satellite lookups and relative times.
+
+The engine (`src/watch/`, portable: no Cesium, DOM, storage or clock) turns
+each layer refresh into a frame, and every zone answer per kind is one of five
+states. A count is never shown beyond what the feed can back:
+
+- **counted**: the feed answered completely and covers the whole zone, so
+  absence is evidence.
+- **floor**, shown as "≥ 3 vessels" or "none seen, but the count is
+  incomplete": the feed answered, but the count is a lower bound (a truncated
+  read, a partial snapshot, coverage that holds only part of the zone or is not
+  known, or a second aircraft feed that is on but not answering).
+- **held**: the feed has data but is stale or reports an error, tested before
+  the fallback state so a stale fallback is held. Nothing moves.
+- **unknown**: the feed cannot answer (unavailable, loading, never answered, a
+  key required, records not handed over, or the zone outside the loaded area).
+- **off**: the layer is disabled; the card offers "Turn on <layer>".
+
+Held, unknown and off answers never produce an exit, an exit window, "no longer
+reported" or "not reported": members inside turn unknown and wait. A stale or
+uncovered feed is never evidence that an asset left. Absence counts only in a
+counted frame with a new epoch, from a layer that carried the asset, when every
+other layer that carried it also answers counted and lacks it. A zone is
+baselined silently on its first answer, after a geometry or filter edit, and
+after a gap without an answer longer than 5 min (aircraft) or 30 min (vessels).
+Entries during that interval are therefore not reported. A gap of at least
+5 min whose count changed reports "rechecked" with the counts before and after.
+Fires and quakes baseline silently on their first answer and after a geometry
+or filter edit; adding or removing either kind re-baselines both.
+
+Thresholds sit in frozen policy objects. They are design values, not
+field-tuned:
+
+- **Entry**: 2 fresh fixes in the zone core, plus a position outside the zone
+  in the layer's previous answering frame (or the other aircraft layer's
+  latest). Otherwise the asset is first-seen: no event, and its dwell reads as
+  a lower bound (≥). **Exit**: 2 fresh fixes outside the core. A fix is fresh
+  only when its receipt time is newer than the last, so a record carried
+  through a missed poll confirms nothing. An entry within 5 min of the last
+  exit is marked as a re-entry.
+- **Margins**: a fix inside the hysteresis band either side of the edge moves
+  nothing. Aircraft use clamp(2% of zone scale, 300 m, 2 km) and vessels
+  clamp(2%, 150 m, 1 km), both at most 25% of the scale (the radius, or
+  √(area/π) for an area).
+- **No longer reported**: an unknown member after 10 min (aircraft) or 60 min
+  (vessels) of silence, with counted absence over 3 aircraft epochs or 1 vessel
+  epoch from every layer that carried it; otherwise it expires silently. A fresh
+  fix outside after an unknown spell reports an exit window ("left between …
+  and …").
+- **Emergencies**: a start needs 2 fresh reports of one emergency kind 20 s to
+  5 min apart; an end needs 2 fresh polls without it. A track missing from 3 new
+  counted epochs of every layer that carried it, each covering its last
+  position, is reported as no longer reported with the outcome not known.
+  Events cover aircraft inside zones set to report all events, watched aircraft,
+  or every aircraft with Settings ▸ Report every emergency. A start on the
+  ground is lowered to notice, and unlawful interference (7500) always carries
+  "the code may be set in error".
+- **Watched assets**: live while the newest fix is at most 2 min (aircraft) or
+  15 min (vessels) old. A state other than live counts only after it holds for
+  2 evaluations over at least 45 s. "Not reported" needs every layer for the
+  kind on and counted, coverage
+  of the last position, and a report earlier in the session. A return after at
+  least 20 min, with at least 80% of the absence covered, reads as reported
+  again. Satellites show a computed orbit position, never an observation.
+- **Fires and quakes**: one fire event per zone and FIRMS epoch, an alert when
+  the strongest detection reaches 100 MW. One quake event per new USGS id at or
+  above the zone's minimum magnitude (default M2.5, optional 25 or 100 km
+  buffer), an alert at the zone's alert magnitude (default M5). After more than
+  30 min without an answer, new items arrive as one summary; alert-level items
+  are still reported one by one.
+- **Busy zones**: when the median of the last 10 counted samples exceeds 30,
+  entries and exits are summed every 10 min until it falls below 20. More than 5
+  events of one type for one zone in one frame become one summary. Watched
+  assets bypass busy mode, summaries and the zone's notify setting.
+- **Feeds**: a needed layer that stops answering for 2 evaluations over at
+  least 2 min reports paused, then answering again.
+
+Limits: 24 zones. Areas are simplified to at most 64 vertices, with 1,024
+across all zones. Circles span 1 to 1,000 km; every zone covers at least 2 km²,
+stays within ±85° latitude and spans at most 40° of latitude and 60° of
+longitude. Up to 50 watched assets; zone names up to 60 characters. Presence
+members are capped at 400 per zone and 10,000 in all; a capped zone keeps
+complete counts but stops timing new arrivals. The inbox holds 500 rows,
+merges repeats within 5 min and admits at most 30 new rows per zone in 10 min
+(alerts and watched assets are exempt).
+
+Privacy guards follow the README's "The line" (assets, not people). A watched
+asset is an identifier only: an exact ICAO24 hex, an exact callsign (no
+prefixes, which would follow whole operators), an MMSI or a NORAD id, with the
+feed's display label. There are no owner, registrant or free-text fields. The
+watchlist declines civil aircraft classed light, glider or business jet, and
+vessels typed sailing or pleasure: the craft most likely to be one private
+person's. The rule is one constant (`WATCHLIST_POLICY`) kept for a maintainer
+decision, and a declined entry keeps no position. Each entry keeps one
+last-seen fix, not a track. The minimum zone size (1 km radius, 2 km²) keeps a
+zone from being drawn around a single house. Events live in memory for the tab
+only, because a persisted log would keep asset positions across sessions; a
+language switch warns before it discards them. Zones and watched assets are
+never put in share links or exported.
+
+Storage: `gev:watch:v1` in localStorage holds the zones, watched assets and
+three preferences, up to 256 KiB. When the saved data cannot be read (damaged,
+too large, from a newer version, or partly unreadable), every save is blocked
+until the person chooses Keep loaded entries and save, or Reset saved watch
+data.
+
+Deliberately unchanged: voice (no new actions; the `set_panel_open` enum,
+instructions and layer manifest are as before), the MCP tools (they cannot
+read browser storage), share links and the panel states they carry, layer-state
+tokens and the layer catalog, and navigation nouns (Watch focuses with the
+existing aircraft, satellite, vessel, fire and location framing). The analyst
+fields `receivedAtMs` (flights, military) and `positionAtMs` (vessels), and
+`getCoverageArea()` on flights and vessels, are additive; voice answers drop
+them.
+
+Known limitations:
+
+- AIS vessels are view-scoped: vessel coverage is the area of the last
+  reconciled snapshot, so zones away from the view read UNKNOWN (outside the
+  loaded area) or a lower bound until the camera goes there.
+- When Live Flights falls back to its regional feed, coverage is the 250 nm
+  disc around the camera nadir less a 25 km margin (438 km). Zones beyond it
+  read UNKNOWN or a lower bound, and never "no longer reported".
+- Polling pauses in hidden tabs, so a long background stretch ends in a
+  re-baseline. Frames with an unchanged epoch are no-ops, so a zone added
+  between polls starts timing at that layer's next epoch.
+- There is no cross-tab sync: the last tab to save wins.
+- "Watched only" and "Quiet" behave the same in v1, because watched assets
+  always report.
+- Zone labels are not clickable.
+- The phone layout has no Watch sheet (`MOBILE_SHEET_PANELS` is unchanged), so
+  the panel is hidden at phone width.
+- The guard does not read LADD or PIA privacy flags: adsb.lol `dbFlags` are not
+  parsed, and OpenSky has none.
+
 ## God's Eye View in conversations — October 2, 2026
 
 Tool answers that can be shown in God's Eye View include a view: camera, layers,

@@ -57,6 +57,18 @@ test('portable sources can share records, and standalone can assemble rendering'
   assert.equal(checkImportDirections(root).modules, 5);
 });
 
+test('the watch engine may share pure helpers, and the app may render it', (t) => {
+  const { root, write } = fixture(t);
+  write('src/watch/engine.js', "export * from './geometry.js';");
+  write('src/watch/geometry.js', "export { km } from '../geoDistance.js';");
+  write('src/geoDistance.js', 'export const km = (m) => m / 1000;');
+  write(
+    'src/app/watch.js',
+    "import * as Cesium from 'cesium'; import '../watch/engine.js';",
+  );
+  assert.equal(checkImportDirections(root).portableEntries, 3);
+});
+
 for (const [name, files, pattern] of [
   [
     'unreachable source imports rendering',
@@ -127,6 +139,28 @@ for (const [name, files, pattern] of [
       'src/voice/realtimeSession.js': '',
     },
     /Common voice controls import protocol/,
+  ],
+  [
+    'watch engine imports a platform',
+    { 'src/watch/engine.js': "import * as Cesium from 'cesium';" },
+    /watch engine reaches platform\/rendering dependency: cesium/,
+  ],
+  [
+    'watch engine reaches storage through a helper',
+    {
+      'src/watch/document.js': "export { read } from '../data/helper.js';",
+      'src/data/helper.js':
+        "export const read = () => globalThis.localStorage.getItem('k');",
+    },
+    /watch engine reaches browser globals: localStorage/,
+  ],
+  [
+    'watch engine imports the panel',
+    {
+      'src/watch/brief.js': "import '../ui/watchWording.js';",
+      'src/ui/watchWording.js': '',
+    },
+    /watch engine reaches application\/rendering: src\/ui\/watchWording\.js/,
   ],
   [
     'dynamic import cannot evade direction',

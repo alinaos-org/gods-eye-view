@@ -6,6 +6,8 @@ import { initImageryBoxTool } from '../ui/imageryBoxTool.js';
 import { createRecentImageryPanel } from '../ui/recentImagery.js';
 import { initGevVoiceCommands } from '../voice/gevRealtime.js';
 import { installViews, isEmbeddedInline } from './embed.js';
+import { overlayHost } from './layers/overlayHost.js';
+import { installWatch } from './watch.js';
 import { installScopeMask, destroyScopeMask } from '../scopeMask.js';
 import { installLayerReleaseTrim } from '../sceneCommandRelease.js';
 import {
@@ -68,6 +70,19 @@ export function createApplicationTools({
     subscribeMapSource: (listener) => mapStackController?.subscribe?.(listener),
   });
   defer(() => geoFileImport?.destroy());
+  // DISPLAY ▸ Watch: zones, watched assets and the session inbox. It reads
+  // layer records only while Watch is in use; its outlines, labels,
+  // listeners and timers belong to the application lifetime.
+  const watch = installWatch({
+    viewer,
+    dataManager,
+    annotations,
+    navigation: styleManager,
+    notify: (text) => styleManager._showToast(text),
+    overlayHost,
+    requestRender: governorRequestRender,
+  });
+  defer(() => watch?.destroy());
   // DATA ▸ Recent Imagery: the box tool claims the pointer like Draw and the
   // panel lives on the right rail, so both belong to the application
   // lifetime. The tileset lets the layer drape while the globe is hidden.
